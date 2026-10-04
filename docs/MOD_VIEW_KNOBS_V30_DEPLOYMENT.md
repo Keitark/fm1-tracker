@@ -1,7 +1,7 @@
 # v28 view and encoder correction: combined v30 deployment
 
 Installed on 2026-10-04 after the user requested the layout shown in
-[`fm1-tracker-screens.png`](../firmware/protracker/preview/fm1-tracker-screens.png)
+[`fm1-tracker-screens.png` at the installed v30 source](https://github.com/Keitark/fm1-tracker/blob/61e3e2db5d0221f2a6b09cb70af95ecf9002d5d1/firmware/protracker/preview/fm1-tracker-screens.png)
 with the knob correction. The combined build uses the canonical tracker source:
 v28's view/edit workflow plus completed-scan encoder capture and retained
 movement backlog. The isolated v29 deployment retained the old view and was

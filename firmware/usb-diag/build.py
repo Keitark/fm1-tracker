@@ -26,8 +26,10 @@ def main():
     p.add_argument('--mod',action='store_true',help='ProTracker-style four-channel MOD editor with volatile CDC file transfer')
     p.add_argument('--mod-source-dir',type=Path,
                    help='Build a preserved MOD source profile, such as a knob-only correction of an installed revision')
-    p.add_argument('--mod-default-song',type=Path,help='Private 4-channel MOD to embed as the read-only boot default')
+    p.add_argument('--mod-default-song',type=Path,help='4-channel MOD to embed as the read-only boot default')
     p.add_argument('--mod-default-song-sha256',help='Required SHA-256 lock for --mod-default-song')
+    p.add_argument('--mod-bank',type=Path,help='Validated read-only Active Bank image to embed for standalone audition/import')
+    p.add_argument('--mod-bank-sha256',help='Required SHA-256 lock for --mod-bank')
     p.add_argument('--nes-smb1',action='store_true',help='Autostart private hash-pinned SMB1 with CDC recovery and stock LCD sequence')
     p.add_argument('--nes-auto-skip',action='store_true',help='Opt-in bounded LCD-only automatic frame skipping; requires --nes-smb1')
     p.add_argument('--nes-audio-priority',action='store_true',help='DAC queue pacing, prefill and bounded LCD skipping; requires --nes-smb1')
@@ -57,6 +59,8 @@ def main():
     if a.mod_source_dir and not a.mod:p.error('--mod-source-dir requires --mod')
     if bool(a.mod_default_song)!=bool(a.mod_default_song_sha256):p.error('The default MOD path and SHA-256 lock are both required')
     if a.mod_default_song and not a.mod:p.error('--mod-default-song requires --mod')
+    if bool(a.mod_bank)!=bool(a.mod_bank_sha256):p.error('The Active Bank path and SHA-256 lock are both required')
+    if a.mod_bank and not a.mod:p.error('--mod-bank requires --mod')
     if a.lcd_stock_fill and not a.peripheral_tests:p.error('--lcd-stock-fill requires --peripheral-tests')
     if a.lcd_stock_dma and not a.lcd_stock_fill:p.error('--lcd-stock-dma requires --lcd-stock-fill')
     if a.lcd_stock_sequence and not a.lcd_stock_dma:p.error('--lcd-stock-sequence requires --lcd-stock-dma')
@@ -98,6 +102,7 @@ def main():
     if a.mdx:defines+=['-DFM1_MDX_PLAYER=1','-DFM1_TARGET_PI32V2=1','-DFM1_KEYSCAN_DMA2=1','-DFM1_KEYSCAN_IRQ=1','-DFM1_KEYSCAN_PACED=1']
     if a.mod:defines+=['-DFM1_MOD_PLAYER=1','-DFM1_TARGET_PI32V2=1','-DFM1_KEYSCAN_DMA2=1','-DFM1_KEYSCAN_IRQ=1','-DFM1_KEYSCAN_PACED=1']
     if a.mod_default_song:defines+=['-DFM1_MOD_EMBEDDED_DEFAULT=1']
+    if a.mod_bank:defines+=['-DFM1_MOD_EMBEDDED_BANK=1']
     if a.lcd_stock_fill:defines+=['-DFM1_LCD_STOCK_FILL=1']
     if a.lcd_stock_dma:defines+=['-DFM1_LCD_STOCK_DMA=1']
     if a.lcd_stock_sequence:defines+=['-DFM1_LCD_STOCK_SEQUENCE=1']
@@ -139,7 +144,7 @@ def main():
         for name in ('mod.c','mod.h','usb.c','usb.h','library.c','library.h','target.c'):
             if not (mod/name).is_file():raise ValueError('Incomplete MOD source profile: '+str(mod/name))
         includes=['-I'+str(mod)]+includes
-        mod_names=('mod.c','usb.c','library.c')+(('view.c',) if (mod/'view.c').is_file() else ())+('target.c',)
+        mod_names=('mod.c','usb.c','library.c')+tuple(n for n in ('view.c','controls.c','bank.c') if (mod/n).is_file())+('target.c',)
         mod_sources=[mod/n for n in mod_names]+[NES/'src/fm1_volume.c',NES/'src/fm1_audio_queue.c']
         sources+=mod_sources;speed_sources.update(mod_sources)
         if a.mod_default_song:
@@ -157,6 +162,23 @@ def main():
                     stream.write('  '+','.join(f'0x{value:02x}' for value in song_data[offset:offset+16])+',\n')
                 stream.write('};\nconst uint32_t fm1_mod_default_song_size = sizeof(fm1_mod_default_song);\n')
             sources.append(embedded_source)
+        if a.mod_bank:
+            if not (mod/'bank.c').is_file() or not (mod/'bank.h').is_file():
+                raise ValueError('This preserved MOD profile has no Active Bank support')
+            bank_data=a.mod_bank.read_bytes()
+            bank_sha=hashlib.sha256(bank_data).hexdigest()
+            if bank_sha!=a.mod_bank_sha256:
+                raise ValueError('Active Bank SHA-256 does not match the requested bank')
+            sys.path.insert(0,str(mod_tools/'tools'))
+            import fm1_bank
+            fm1_bank.parse_bank(bank_data)
+            bank_source=out/'embedded_active_bank.c'
+            with bank_source.open('w',encoding='ascii',newline='\n') as stream:
+                stream.write('#include <stdint.h>\nconst uint8_t fm1_mod_active_bank[] __attribute__((aligned(4))) = {\n')
+                for offset in range(0,len(bank_data),16):
+                    stream.write('  '+','.join(f'0x{value:02x}' for value in bank_data[offset:offset+16])+',\n')
+                stream.write('};\nconst uint32_t fm1_mod_active_bank_size = sizeof(fm1_mod_active_bank);\n')
+            sources.append(bank_source)
     if a.nes_smb1:
         core=ROOT/'references/source/peak-nes'
         if run(['git','-C',core,'rev-parse','HEAD']).strip()!='68bdfc8de570264c0e84f73766f1a1ed3591066f':raise ValueError('NES core pin changed')
@@ -252,6 +274,9 @@ def main():
             'mod_source_dir':str(mod) if a.mod else None,
             'mod_default_song_sha256':song_sha if a.mod_default_song else None,
             'mod_default_song_bytes':len(song_data) if a.mod_default_song else None,
+            'mod_bank_sha256':bank_sha if a.mod_bank else None,
+            'mod_bank_bytes':len(bank_data) if a.mod_bank else None,
+            'mod_bank_storage':'read-only embedded Active Bank; explicit copy to self-contained song sample slot' if a.mod_bank else None,
             'nes_auto_skip':a.nes_auto_skip,
             'nes_audio_priority':a.nes_audio_priority,
             'nes_live_fx':a.nes_live_fx,
@@ -284,6 +309,9 @@ def main():
         result['profile']='MDX_KARAOKE_CANDIDATE'
     if a.mod:
         result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in mod.glob('*.h')})
+        if a.mod_bank:
+            inputs=[a.mod_bank.resolve(),mod_tools/'tools/fm1_bank.py']
+            result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in inputs})
         result['profile']='MOD_EDITOR_CANDIDATE'
     manifest.write_text(json.dumps(result,indent=2)+'\n');log.close()
     print(json.dumps({k:v for k,v in result.items() if k not in ('static_audit','source_sha256','archive_sha256','power_evidence','vendor_overlay_sources')},indent=2))

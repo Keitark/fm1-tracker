@@ -1,8 +1,9 @@
 {
   "description": "Offline firmware render; physical FM-1 test pending.",
   "renderer": "firmware/protracker/view.c",
-  "renderer_sha256": "0fef83044ae5cfbca25717f9dab35cf4e458928200d1294a08ab940fea5564aa",
-  "mod_sha256": "f74f635926482845decf2ecdf214e1f53f7100a41871609f5c6789940fc1ef14",
+  "renderer_sha256": "7ec3ba72dfa4b828e55439a33f51d3c58600077de3a7ad6c68f535e639c67d2e",
+  "mod_sha256": "b7a4a0d04762e895e732c5a78a1f8fc0f40fe96054cad78291db0c96253bae9a",
+  "bank_sha256": "0696b3a3e75732abf27edbfdd3eb68f9fe689d0cbe13a14c556e853b9abf89f8",
   "geometry": [
     240,
     240
@@ -13,100 +14,196 @@
       "page": 0,
       "running": 1,
       "write": 0,
-      "sample_mode": 0,
+      "field": 0,
       "order": 0,
       "row": 16,
       "channel": 0,
       "sample": 1,
-      "sha256": "476817bb5e4686a5a2bfac2547dd6037bca69c4e7f9298760199c907d08e4237"
+      "arranger": 0,
+      "bank": 0,
+      "sha256": "fb60b8efcbafa3346ec505f69305a17b7bf30bf4306098987a12ebd789c45fe1"
     },
     "edit-audition": {
       "page": 0,
       "running": 0,
       "write": 0,
-      "sample_mode": 0,
+      "field": 0,
       "order": 0,
       "row": 18,
       "channel": 2,
       "sample": 7,
-      "sha256": "e70d4dd63ffd2b0b115243fa9442c4da18a4f01246ae3f0f73ca36007f8be812"
+      "arranger": 0,
+      "bank": 0,
+      "sha256": "f89ec68c8d98e38d3e6b17e6c54de794e4fba29eb807f3d67c916170d51016be"
     },
     "write-note": {
       "page": 0,
       "running": 0,
       "write": 1,
-      "sample_mode": 0,
+      "field": 0,
       "order": 0,
       "row": 18,
       "channel": 2,
       "sample": 7,
-      "sha256": "b83ab6132415785f224a2befe3cf6aea58f469f8ce1379e6ff69653a9de7f97a"
+      "arranger": 0,
+      "bank": 0,
+      "sha256": "0411c707fbd19e07b937298d20ff27ebb1d23e0953e9c839c71a4be2a38405a3"
     },
-    "write-sample-parameters": {
+    "write-sample": {
       "page": 0,
       "running": 0,
       "write": 1,
-      "sample_mode": 1,
+      "field": 1,
       "order": 0,
       "row": 18,
       "channel": 2,
       "sample": 7,
-      "sha256": "1948ad84e6ab3e582218faec28fd1430b5695aad3a2e42fc55cda26c2f09307d"
+      "arranger": 0,
+      "bank": 0,
+      "sha256": "794fe48fd43b1010965af8647c371ffed27f0c2c5ec78b8ad243fb3a4c484c21"
+    },
+    "write-effect": {
+      "page": 0,
+      "running": 0,
+      "write": 1,
+      "field": 2,
+      "order": 0,
+      "row": 18,
+      "channel": 2,
+      "sample": 7,
+      "arranger": 0,
+      "bank": 0,
+      "sha256": "2b456e6ad3e81432c0a3096fe5a344001d1dc34cd8243dbbb52046b55c46a9c2"
+    },
+    "write-param": {
+      "page": 0,
+      "running": 0,
+      "write": 1,
+      "field": 3,
+      "order": 0,
+      "row": 18,
+      "channel": 2,
+      "sample": 7,
+      "arranger": 0,
+      "bank": 0,
+      "sha256": "0f2bfea08b3ad116c37b8eb396b903639a51a70b67b1b4d99e6a967bfe0a64a3"
+    },
+    "block-selection": {
+      "page": 0,
+      "running": 0,
+      "write": 1,
+      "field": 0,
+      "order": 0,
+      "row": 20,
+      "channel": 2,
+      "sample": 1,
+      "arranger": 0,
+      "bank": 0,
+      "sha256": "7f04d3312a15ee8317f3955728475354794c732d13d51939b8d46d2736d07a5e"
+    },
+    "song-arranger": {
+      "page": 0,
+      "running": 0,
+      "write": 0,
+      "field": 0,
+      "order": 3,
+      "row": 18,
+      "channel": 1,
+      "sample": 3,
+      "arranger": 1,
+      "bank": 0,
+      "sha256": "dd7a45910b88844034818d234bb11f439f81c532b602b4e7cb8030b2cefdb382"
+    },
+    "bank-audition": {
+      "page": 0,
+      "running": 0,
+      "write": 0,
+      "field": 0,
+      "order": 0,
+      "row": 18,
+      "channel": 1,
+      "sample": 5,
+      "arranger": 0,
+      "bank": 1,
+      "sha256": "b9a35662e5eba683f9c7e4a0ab82d0f13966858d1bd0593019ab9f7171fd8dbf"
+    },
+    "quick-sample": {
+      "page": 0,
+      "running": 0,
+      "write": 1,
+      "field": 0,
+      "order": 0,
+      "row": 18,
+      "channel": 0,
+      "sample": 1,
+      "arranger": 0,
+      "bank": 0,
+      "sha256": "48b9e2bfbbb5d86928da062ee9b501f2cd95cdc81599b1816dd205deeb873d7c"
     },
     "sample-list": {
       "page": 2,
       "running": 0,
       "write": 0,
-      "sample_mode": 0,
+      "field": 0,
       "order": 0,
       "row": 18,
       "channel": 2,
       "sample": 7,
-      "sha256": "e2770d8087852796441477b063957e314d82da8e2585c3a911f0f649946d95fc"
+      "arranger": 0,
+      "bank": 0,
+      "sha256": "ae6969860e4dcffec09604b9982c853fa8f1eb571cab31962ed94b11845ea865"
     },
     "usb-file-chooser": {
       "page": 1,
       "running": 0,
       "write": 0,
-      "sample_mode": 0,
+      "field": 0,
       "order": 0,
       "row": 18,
       "channel": 2,
       "sample": 7,
+      "arranger": 0,
+      "bank": 0,
       "sha256": "d3829d29cf05844f0dc34ff80a55c78fde078c29bb0c45dc666065ec589dd71b"
     },
     "playing-pattern": {
       "page": 0,
       "running": 2,
       "write": 0,
-      "sample_mode": 0,
+      "field": 0,
       "order": 0,
       "row": 16,
       "channel": 1,
       "sample": 2,
-      "sha256": "674085aa4feb7b5dd1460e112df9226cdec0cb1cd88baedfca554affc3040768"
+      "arranger": 0,
+      "bank": 0,
+      "sha256": "a72d4c1a195130dce2f393db6c928a179e3851ee936e1c99227943b6eac6864f"
     },
     "boundary-row00": {
       "page": 0,
       "running": 0,
       "write": 0,
-      "sample_mode": 0,
+      "field": 0,
       "order": 0,
       "row": 0,
       "channel": 0,
       "sample": 1,
-      "sha256": "0f833d60a3a0d5ea7bba2d34018b73c69e53e9f4569798ba4428766d1f493ecd"
+      "arranger": 0,
+      "bank": 0,
+      "sha256": "3de467939295ee0cd6c5188b08c7db29438418c59409f780c05174af6e16ce5b"
     },
     "boundary-row63": {
       "page": 0,
       "running": 0,
       "write": 1,
-      "sample_mode": 0,
+      "field": 0,
       "order": 0,
       "row": 63,
       "channel": 3,
       "sample": 9,
-      "sha256": "80b31499950d12eda4cce5c3461694f9eb53dffece842ad959ea783e4bb6150b"
+      "arranger": 0,
+      "bank": 0,
+      "sha256": "64fc1632d8936dceddee8838d6ad5dfa2504156b788a6030571f9e2b5bd6f806"
     }
   }
 }

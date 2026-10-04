@@ -222,6 +222,10 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             # ota_status 0x1c5be40 +372 = trace 0x1c5bfb4; at 0x200276c
             # d1 ec 07 17 is [++r0=372]=r1. Wrapper/marker otherwise unchanged.
             if usb_mod:encodings.update({372:'d1 ec 07 17'})
+            # Milestone #2 MOD link adds separate ring slots. Reviewed
+            # ota_status 0x1c5be50 +380 = trace 0x1c5bfcc; store at
+            # 0x200276c is d1 ec 0f 17. Same 46-byte wrapper/22-byte marker.
+            if usb_mod:encodings.update({380:'d1 ec 0f 17'})
             # Composite link: ota_status0x1c4db50 +344 = trace0x1c4dca8;
             # reviewed store0x200276c: d1 ec 0b 15. Wrapper otherwise unchanged.
             if usb_audio:encodings.update({344:'d1 ec 0b 15'})
