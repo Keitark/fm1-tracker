@@ -290,3 +290,158 @@ Bank serve many different songs.
 The default first-run flow may offer the demo immediately, but after the
 standalone persistence work exists, normal subsequent boots should resume the
 current work song rather than replacing it with the demo.
+
+
+## Fast hardware editing principles
+
+The FM-1 editor should feel faster than a small-screen menu system. Keep the
+seven encoders spatially stable and let the pattern grid itself be the primary
+editor. Avoid requiring repeated entry into FX/SAMPLE sub-pages for ordinary
+editing.
+
+### Stable encoder roles
+
+Preferred always-visible editing roles:
+
+| Encoder | Primary role |
+| --- | --- |
+| SELECT | Channel 1-4 |
+| ALGORITHM | Order/pattern position |
+| KNOB1 | Row scroll; one detent = one row |
+| KNOB2 | Field cursor: NOTE -> SMP -> FX -> PARAM |
+| KNOB3 | Change the value under the field cursor |
+| KNOB4 | Entry step; PARAM may temporarily use it as the high hex nibble |
+| PRESETS | Current song sample slot 01-1F |
+
+The user should be able to understand the current edit target from the highlighted
+cell/field without consulting a separate mode indicator.
+
+### Direct manipulation
+
+Turning KNOB3 changes exactly what is highlighted:
+
+- NOTE -> semitone transpose,
+- SMP -> sample slot,
+- FX -> effect 0-F,
+- PARAM -> parameter value.
+
+Piano keys remain the fastest note-entry mechanism and audition the selected
+song sample immediately. Editing should not require leaving the pattern page.
+
+For PARAM, prefer hexadecimal-aware control. A strong candidate is:
+
+- KNOB3 = low nibble,
+- KNOB4 = high nibble,
+
+while PARAM is selected. Returning to NOTE/SMP/FX restores KNOB4 to entry-step
+selection.
+
+### Encoder acceleration
+
+Do **not** accelerate KNOB1 row scrolling: one click must always mean one row.
+Likewise SELECT should always move exactly one channel.
+
+Acceleration is useful only where the destination is more important than every
+intermediate value:
+
+- ALGORITHM/order scrolling,
+- Active Bank browsing,
+- long sample lists,
+- possibly PARAM 00-FF if nibble editing is not used.
+
+Slow turns remain one step per detent; rapid turns may skip in bounded chunks.
+Never make note entry, channel selection or row placement velocity-dependent.
+
+### One-action edit loop
+
+The common composition loop should require no menus:
+
+```text
+KNOB1      choose row
+SELECT     choose channel
+PRESETS    choose song sample
+piano key  enter note
+KNOB2      move to FX/PARAM if needed
+KNOB3/4    edit value
+repeat
+```
+
+Each completed edit should be journaled to flash when persistent editing is
+implemented.
+
+### Quick delete
+
+Deletion should be immediate and field-sensitive:
+
+- SCL: clear the currently selected field,
+- LFO: clear the entire current cell.
+
+Do not advance the row after delete unless a future explicit delete-step option
+is added.
+
+### Quick copy/paste and block work
+
+Block operations are a high-priority productivity feature. They should avoid a
+separate menu page.
+
+Candidate interaction:
+
+1. hold SEQ and turn KNOB1 to extend a block selection vertically,
+2. turn SELECT while the block modifier is held to extend/select channels,
+3. a dedicated button action copies the selected block,
+4. move with KNOB1/SELECT,
+5. another button action pastes at the cursor.
+
+Exact button assignments can change after physical testing, but the important
+constraint is that block selection remains visible on the pattern grid and row
+scrolling/channel selection continue to use their normal encoders.
+
+A whole pattern is only 1024 bytes, so clipboard and undo data are inexpensive
+relative to the 256 KiB song buffer.
+
+### Audition-first sample workflow
+
+PRESETS should select the song's current 1-31 sample slot without leaving the
+pattern. When browsing the Active Bank, turning the main browse encoder should
+audition the highlighted bank sample immediately. Import/copy into a song slot
+should be one explicit action, then the user returns directly to the pattern.
+
+The goal is:
+
+```text
+browse -> hear -> copy -> play keys -> write
+```
+
+rather than browse -> open details -> confirm -> return -> audition.
+
+### UI feedback
+
+The fixed center row remains the visual anchor. Within that row:
+
+- selected channel gets a channel highlight,
+- selected field gets a stronger sub-highlight,
+- WRITE state is obvious but does not hide field selection,
+- changing a knob should update the field on the next UI frame,
+- bank/sample names should appear transiently in the information line without
+  replacing the pattern grid.
+
+The editor should prefer transient overlays/status text over modal pages for
+short-lived operations such as sample choice, step change, copy/paste result or
+bank audition.
+
+### Product-level editing target
+
+A skilled tracker user should be able to perform a simple four-channel drum
+pattern without opening a menu:
+
+- pick kick,
+- place notes,
+- pick snare,
+- place notes,
+- add hats,
+- set sample-offset/retrigger effects,
+- copy a block,
+- make a variation,
+- press PLAY,
+
+using the piano keys and encoders almost continuously.
