@@ -445,3 +445,88 @@ pattern without opening a menu:
 - press PLAY,
 
 using the piano keys and encoders almost continuously.
+
+
+## Quick sample buttons in pattern editing
+
+Pattern editing should provide **direct quick-sample access** for frequently
+used sounds. Repeatedly turning PRESETS through the song's 31 sample slots is
+too slow for drum programming and breakbeat composition.
+
+### Quick slots
+
+Reserve a small set of physical function buttons as **Quick Sample Slots** while
+the pattern grid is active. The exact physical buttons may change after a
+layout/bench pass, but the target is approximately 6-8 quick slots.
+
+Typical default assignments for the breakbeat starter:
+
+```text
+Q1 KICK
+Q2 SNARE
+Q3 CLOSED HAT
+Q4 OPEN HAT / CLAP
+Q5 BASS
+Q6 EP / RAVE STAB
+Q7 BREAK CHOP
+Q8 COME ON!
+```
+
+These are **song-sample shortcuts**, not direct references to the Active Bank.
+A quick slot points to one of the Current MOD's 31 sample slots, so exported
+MODs remain ordinary self-contained files.
+
+### Basic behavior
+
+A short press on a Quick Sample button should:
+
+1. select the assigned song sample immediately,
+2. show its slot/name briefly in the information line,
+3. audition it at a sensible root pitch if that does not interfere with rapid
+   editing,
+4. leave the user on the pattern grid.
+
+The next piano-key press writes that sample at the chosen pitch using the normal
+entry-step behavior.
+
+For percussion-heavy workflows, evaluate an optional **direct-trigger/write**
+gesture: for example REC/WRITE + Quick Sample may place the assigned sample at
+the current row using a configurable default tracker note (such as C-2), then
+advance by STEP. This should be additive; plain Quick Sample presses should
+still work as fast sample selection for melodic pitching.
+
+### Assignment
+
+Quick slots must be reassignable without opening a deep menu.
+
+Candidate workflow:
+
+1. choose a song sample with PRESETS or import one from the Active Bank,
+2. hold the desired Quick Sample button,
+3. after a short hold threshold, bind the current song-sample slot to it,
+4. show `Qn = Sxx SAMPLE NAME` as confirmation.
+
+Persist these bindings with the work-song/editor state so power cycling restores
+the same performance/edit layout.
+
+When a New Song has just been created, auto-fill quick slots as relevant song
+samples are imported from the default bank, or provide a default mapping once
+the corresponding starter samples have been copied into song slots.
+
+### Interaction priority
+
+Quick Sample buttons are intended to make the common drum/stab workflow:
+
+```text
+KICK button -> key/write -> KNOB1 rows
+SNARE button -> key/write -> KNOB1 rows
+HAT button -> key/write -> KNOB1 rows
+STAB button -> play pitch on keyboard
+COME ON button -> place vocal
+```
+
+possible without browsing a sample list.
+
+Transport and essential editing operations must remain directly reachable.
+Avoid requiring a persistent separate "sample pad mode" if the same physical
+buttons can be context-sensitive only while the pattern page is active.
