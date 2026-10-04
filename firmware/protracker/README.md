@@ -14,11 +14,12 @@ quick samples, rectangular block copy/paste, order arranging, an Active Bank,
 an original tutorial and empty NEW SONG. Build/test evidence and the physical
 acceptance checklist are in [MILESTONE_2.md](MILESTONE_2.md).
 
-**Installed hardware is v31**, flashed on 2026-10-05 JST. Its 96-sector
-verification, full 1 MiB readback, CDC boot and brief demo playback telemetry
-passed; the UI counter advanced at approximately 25 updates/second.
-[Deployment evidence](../../docs/MOD_FAST_EDITOR_BANK_V31_DEPLOYMENT.md) records
-these checks. Physical knobs, visual response and audible outputs remain on
+**Installed hardware is v32**, flashed on 2026-10-05 JST: the v31 editor with
+State of the Art as its embedded boot song, retaining the original 29-sound bank.
+Its 119-sector/full-image verification, CDC boot and exact loaded-MOD CRC passed.
+[Deployment evidence](../../docs/MOD_STOA_DEFAULT_V32_DEPLOYMENT.md) records these checks.
+The [v31 live check](../../docs/MOD_FAST_EDITOR_BANK_V31_DEPLOYMENT.md) measured
+approximately 25 UI counter updates/second. Physical knobs, visual response and audible outputs remain on
 the acceptance checklist. The encoder capture/backlog correction is retained.
 Historical evidence remains in the [v30 deployment](../../docs/MOD_VIEW_KNOBS_V30_DEPLOYMENT.md)
 and [v29 profile](profiles/knob-fix-v29/README.md).
@@ -119,8 +120,10 @@ channels 1/4 left and 2/3 right. Volume ramp and effects remain:
 Unsupported effects survive export. Tremolo, E6 loops, Amiga filtering and exact
 Paula output are not implemented.
 
-v31 embeds the original demo and read-only bank. Edits are volatile; power
-cycling restores the demo. Save to the PC before switching off. Writable flash
+The standard v31 build embeds the original demo and read-only bank; this unit's
+v32 build instead boots STOA with its own samples selectable through PRESETS.
+The separate ENV bank still contains the original 29 sounds. Edits are volatile;
+power cycling restores the embedded song. Save to the PC before switching off. Writable flash
 persistence, undo, waveform editing, device WAV conversion and realtime recording
 are outside this milestone.
 

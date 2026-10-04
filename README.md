@@ -18,9 +18,11 @@ original 29-sample breakbeat bank and a self-contained tutorial MOD. Its
 candidate renderer. [Milestone evidence](firmware/protracker/MILESTONE_2.md)
 separates host/build verification from physical acceptance.
 
-**Installed hardware is v31**, flashed on 2026-10-05, with 96-sector and full
-1 MiB readback verification, serial boot and brief demo playback checks.
-[Deployment evidence](docs/MOD_FAST_EDITOR_BANK_V31_DEPLOYMENT.md) records
+**Installed hardware is v32**, flashed on 2026-10-05: the v31 editor with
+State of the Art as the boot default, including its samples. The separate
+original 29-sound bank remains included. [Deployment evidence](docs/MOD_STOA_DEFAULT_V32_DEPLOYMENT.md)
+records 119-sector/full-image verification and an exact boot-MOD CRC match.
+[Prior v31 checks](docs/MOD_FAST_EDITOR_BANK_V31_DEPLOYMENT.md) recorded
 zero underruns/errors and approximately 25 UI counter updates/second.
 Physical layout, knob response, audible output and perceived scrolling remain
 acceptance checks. The v30 encoder fix is retained.

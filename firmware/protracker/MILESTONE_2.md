@@ -107,6 +107,9 @@ v31 was deliberately installed on 2026-10-05 JST at the user's request.
 [Deployment evidence](../../docs/MOD_FAST_EDITOR_BANK_V31_DEPLOYMENT.md) records
 96-sector/full-image verification, CDC boot and 20-second playback telemetry
 with zero underruns/errors and approximately 25 UI counter updates/second.
+The user subsequently selected STOA as the boot default; the
+[v32 deployment](../../docs/MOD_STOA_DEFAULT_V32_DEPLOYMENT.md) records that
+content-only build and installation, retaining the v31 editor and original bank.
 Run the remaining items of the plan's twelve-point physical checklist:
 one-detent channel/row movement, obvious field selection, fast KNOB3/4 editing,
 PRESETS/shortcuts, piano/WRITE, center-row song/pattern behavior, heard STOP
