@@ -1,4 +1,4 @@
-# FM-1 ProTracker-style MOD editor candidate
+# FM-1 ProTracker-style MOD editor
 
 This is a new, independent FM-1 firmware profile for composing and editing
 four-channel Amiga `.MOD` files on the device. It uses the existing stock-derived
@@ -14,18 +14,19 @@ Current UX decisions and implementation handoff notes are in
 
 ## Current status
 
-Current priority is the [v29 knob-only correction](profiles/knob-fix-v29/README.md)
-of installed v25. It captures each completed scan independently of screen work
-and preserves fast knob movements while retaining one step per click. Its
-encoder tests, firmware audit and package checks passed. It awaits USB
-reconnection for flashing and physical verification.
+**Installed firmware is v30**, flashed on 2026-10-04 JST. It combines the portable
+view and edit workflow developed in v28 with the encoder capture/backlog fix
+isolated in [v29](profiles/knob-fix-v29/README.md). Encoder decoding captures
+each completed scan independently of screen work and retains fast movements
+while delivering one step per click. Host tests, static audit, package checks,
+flash readback and serial boot checks passed.
+[Deployment evidence](../../docs/MOD_VIEW_KNOBS_V30_DEPLOYMENT.md) records the
+installation. Physical new layout, knob response, audio and frame rate
+confirmation remain pending. On historical v25, the user confirmed one physical
+click of SELECT or PRESETS moves one track or sample. Prior revisions confirmed
+all four parts on the speaker in SPK mode and stereo headphone output in ST mode.
 
-Installed firmware is **v25**. The user confirmed one physical click of SELECT
-or PRESETS moves one track or sample. Prior revisions confirmed all four parts
-on the speaker in SPK mode and stereo headphone output in ST mode.
-
-**v28 is built and packaged, but not flashed: FM-1 USB is disconnected.** Its
-ProTracker-inspired blue/slate view follows the supplied videos: four waveform
+The installed ProTracker-inspired blue/slate view follows the supplied videos: four waveform
 scopes and narrow level indicators, nine pattern rows, a fixed center cursor,
 selected-track color, and a red WRITE note field. The header shows song,
 EDIT/PLAY/PAT/WRITE, order, pattern, sample, step, octave, parameter mode and
@@ -34,38 +35,54 @@ are precomputed in ROM; repeated pixel rows are reused. The LCD remains 30 MHz,
 RGB444, with one wire frame to retain the song and heap reserve. New hardware
 frame rate and audiovisual delay have not been measured.
 
-v28 includes v27's selected-order PLAY, zero entry step, effect-preserving note
+v30 includes v27's selected-order PLAY, zero entry step, effect-preserving note
 entry, preview continuing after key release, and triggered-row highlighting.
 GLO adds pattern playback; SCL and LFO clear note/sample or effect/parameter.
 Stopped audition flushes old queued audio and primes short samples immediately.
 EDIT stops preview from every page. RAM edits require USB save before power-off.
 
-Installed application: **389,744 bytes**, SHA-256
-`edf482ccd9caf0b1cb9ce68cbce92aff74a2534138219cb28ac13265e9636b67`.
-Installed 1 MiB image: SHA-256
-`cd47143087957128c837514b6f81aa2ccead9ae050458adb0e8aa50392961440`.
-The private candidate is at
-`private-backups/usb-diag-candidates/cd47143087957128c837514b6f81aa2ccead9ae050458adb0e8aa50392961440/fm1-usb-diag.UNQUALIFIED.bin`.
-The application static audit, nine package preservation/CRC checks, host tests,
-and all-sector plus full 1 MiB flash readback passed. After reset, the protected
-CDC boot check observed advancing audio frames and zero underruns. The reset
-tool reported a text-decoding error after sending reset; the device booted and
-the follow-up check passed. The build manifest keeps `flashable: false` so
+Installed v30 application: **392,048 bytes**, SHA-256
+`e8c9dd354c2c2d7f0332f1addfd5fdf8ba6e9f0f6018106c3736d5a5831bc3de`.
+Installed v30 1 MiB image: SHA-256
+`05f940970cbfe88284ada86deabb17ebc6e6f525a0123d2744f3392e1a1e823c`.
+The application static audit, nine package preservation/CRC checks, rebuilt
+editor/starter host tests (2) and encoder test (1),
+96-sector verification and one full 1 MiB flash readback passed. After the single
+reset, the protected CDC observation identified `MOD-EDITOR/1` on COM6, with
+audio frames advancing from 419,072 to 551,424 and zero underruns or peripheral
+errors. The reset tool reported the known host `UnicodeDecodeError` after
+sending reset; reset and flashing were never repeated. The follow-up observation
+resolved the reset; the protected session is idle and unblocked, with device
+`ready: 1`. The build manifest keeps `flashable: false` so
 installation uses the protected flash session with a checked plan and readback.
-Latest uninstalled candidate:
+Heap reserve is 131,148 bytes (minimum 131,072).
+
+Historical v29 was successfully flashed before v30 and retained v25's screen,
+audio and edit behavior. [Its deployment note](../../docs/MOD_KNOB_V29_DEPLOYMENT.md)
+and [profile provenance](profiles/knob-fix-v29/README.md) preserve that checkpoint.
+
+Historical v25 source baseline: application **389,744 bytes**, SHA-256
+`edf482ccd9caf0b1cb9ce68cbce92aff74a2534138219cb28ac13265e9636b67`;
+1 MiB image SHA-256
+`cd47143087957128c837514b6f81aa2ccead9ae050458adb0e8aa50392961440`.
+The v29 profile preserves the recovered v25 source hashes and isolated input
+delta in [its provenance record](profiles/knob-fix-v29/README.md).
+
+Historical v28 build (its original packaged image was never flashed):
 `firmware/usb-diag/build/mod-editor-view-edit-v28`, application **391,792 bytes**,
 SHA-256 `b5b7737cb2cb7b46afddc6c51b6062251ec84700cbc656a154097e57428b31cd`.
 Its private 1 MiB image SHA-256 is
 `cb15bbafc41fdc7a55bd8a8125c81d9dcaa803b1b05c93abda72dc68507be948`.
-Static audit and nine package preservation/CRC checks passed. Heap reserve is
-131,148 bytes (minimum 131,072). New core regressions pass. No v28 device write,
-display observation or audible acceptance has occurred.
+Static audit and nine package preservation/CRC checks passed. The same portable
+view/edit workflow is now installed as part of v30.
 
 [Exact offline UI preview](preview/fm1-tracker-screens.png) calls `view.c`, the
 firmware's text and pixel renderer, then applies LCD RGB444 truncation. It is
 not a device photograph. Regenerate it with
 `python firmware/protracker/tools/render_ui_preview.py`;
 `preview/preview-manifest.json` records source/song/frame hashes.
+Its renderer SHA-256 matches installed v30:
+`0fef83044ae5cfbca25717f9dab35cf4e458928200d1294a08ab940fea5564aa`.
 
 Each channel cell shows note (3 characters), sample (2 hex digits), and
 effect/parameter (3 hex digits): `C-301E00` means C-3, sample 01, effect E00.
@@ -100,8 +117,8 @@ and all four channel cells across nine pattern rows. The current row has a full
 width highlight and `>` marker. Physical panel
 labels use the recovered stock slot order; exact encoder direction and detents
 for this profile still need a bench check.
-The table below describes candidate v28. Installed v25 still uses entry steps
-1–16, stops preview on key release, and starts PLAY at order 0.
+The table below describes installed v30: the v28 view/edit workflow plus the
+encoder capture/backlog correction.
 
 | Control | Action |
 | --- | --- |
@@ -127,7 +144,7 @@ The table below describes candidate v28. Installed v25 still uses entry steps
 | REC | Toggle WRITE mode |
 | SAVE | Show the reminder to export with the USB client |
 
-Releasing a piano key does not cut its sample in candidate v28. A one-shot
+Releasing a piano key does not cut its sample in installed v30. A one-shot
 sample finishes naturally; a loop continues until the next audition key,
 EDIT or PLAY/STOP. Live WRITE follows the current triggered row and does not
 apply the stopped-entry row step. The header shows the step as `T00`–`T16`
@@ -181,12 +198,12 @@ cmake --build firmware/protracker/build/host --config Release
 ctest --test-dir firmware/protracker/build/host -C Release --output-on-failure
 C:\Python311\python.exe -m unittest discover -s firmware/protracker/tests -p "test_*.py" -v
 C:\Python311\python.exe firmware/protracker/library_server.py list
-C:\Python311\python.exe firmware/usb-diag/build.py --controller 0 --peripheral-tests --lcd-stock-fill --lcd-stock-dma --lcd-stock-sequence --mod --lcd-async --lcd-spi30 --lcd-rgb444 --mod-default-song private-library/MOD/STATEART.MOD --mod-default-song-sha256 f74f635926482845decf2ecdf214e1f53f7100a41871609f5c6789940fc1ef14 --out firmware/usb-diag/build/mod-editor-view-edit-v28
-C:\Python311\python.exe firmware/usb-diag/package.py --build firmware/usb-diag/build/mod-editor-view-edit-v28
+C:\Python311\python.exe firmware/usb-diag/build.py --controller 0 --peripheral-tests --lcd-stock-fill --lcd-stock-dma --lcd-stock-sequence --mod --lcd-async --lcd-spi30 --lcd-rgb444 --mod-default-song private-library/MOD/STATEART.MOD --mod-default-song-sha256 f74f635926482845decf2ecdf214e1f53f7100a41871609f5c6789940fc1ef14 --out firmware/usb-diag/build/mod-editor-view-edit-knobs-v30
+C:\Python311\python.exe firmware/usb-diag/package.py --build firmware/usb-diag/build/mod-editor-view-edit-knobs-v30
 ```
 
 The build verifies SDK revision `e30b1ee375d1f2993fc23bf92c8b99006a6e5f9d`
-and a clean SDK checkout. `build/mod-editor-view-edit-v28` contains the ELF, application
+and a clean SDK checkout. `build/mod-editor-view-edit-knobs-v30` contains the ELF, application
 payload, source hashes, map, disassembly and static audit. The stock-layout
 packager makes a private unit-specific **UNQUALIFIED** 1 MiB image, retaining
 the saved boot/config/reserved regions and verifying CRCs. This is not a vendor
@@ -223,9 +240,9 @@ read-only boot default; 3D Demo II and 9 Fingers stay on the PC.
 
 ## Hardware acceptance gate
 
-The protected flash readback, CDC identity, advancing audio frame counter,
-zero reported underruns, and scanner progress without retries have been
-observed for the installed build. The boot song reports 230,652 bytes, CRC32
+The v30 protected flash readback, CDC identity, advancing audio frame counter,
+zero reported underruns and zero peripheral errors have been observed.
+The boot song reports 230,652 bytes, CRC32
 `d3b29503`, and no edits before USB upload. The user confirmed fast scrolling
 and the complete `SPK` mix on prior revisions. Bench acceptance still needs
 keyboard audition and WRITE, sample and channel encoders, scrolling latency,

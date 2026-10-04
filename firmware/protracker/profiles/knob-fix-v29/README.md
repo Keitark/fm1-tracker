@@ -1,12 +1,17 @@
-# v29 knob-only correction of installed v25
+# v29 knob-only correction from the v25 baseline
 
-Built and packaged on 2026-10-04. Not flashed: FM-1 USB is disconnected.
+Built, packaged and flashed on 2026-10-04 JST. Flash readback and serial boot
+checks passed. This historical checkpoint was then superseded by installed
+[combined v30](../../../../docs/MOD_VIEW_KNOBS_V30_DEPLOYMENT.md), which adds
+the refined view/edit workflow while retaining this input correction.
+Physical new-layout, knob and audio acceptance for v30 remain pending.
+See [deployment evidence](../../../../docs/MOD_KNOB_V29_DEPLOYMENT.md).
 
 This profile starts from all seven exact v25 source files, recovered from this
 task's source patch history and checked against the v25 build manifest hashes.
 `baseline-source.json` records those hashes. Six core/header files remain byte
 identical; `target.c` has the isolated input delta in `knob-only.patch`.
-The installed v25 application SHA-256 is
+The historical v25 application SHA-256 is
 `edf482ccd9caf0b1cb9ce68cbce92aff74a2534138219cb28ac13265e9636b67`.
 
 ## Correction
@@ -20,9 +25,9 @@ movement for later iterations. It no longer clips and discards fast movements.
 The stock two-scan stability filter, physical mappings and knob actions remain.
 Scanner recovery resets decoder state while holding the input lock.
 
-This is the first hardware candidate for the user's knob-only priority. Its
-screen, audio and edit behavior are the installed v25 behavior. The separate
-v28 view/workflow work remains a development candidate for later testing.
+This is the isolated knob-only deployment checkpoint. Its
+screen, audio and edit behavior retain the v25 baseline. The portable
+view/workflow developed in v28 is now installed through combined v30.
 
 ## Evidence
 
@@ -34,7 +39,17 @@ v28 view/workflow work remains a development candidate for later testing.
 - All nine package preservation/CRC checks passed.
 - Baseline audio output, key handling, knob mappings and renderer function
   text were compared and are unchanged.
-- Physical knob response and scanner health after flashing remain pending.
+- 96 sectors were verified, and one full 1 MiB device readback was identical
+  to the packaged v29 image.
+- After one reset, protected serial observation identified `MOD-EDITOR/1` on
+  COM6. Audio frames advanced from 860,288 to 992,640 with zero underruns and
+  zero peripheral errors.
+- The reset command hit the known host `UnicodeDecodeError` after reset was
+  sent. It was never resent; the follow-up observation resolved the reset and
+  left the protected session idle and unblocked, with `reset_pending: false`
+  and `needs_observation: false`.
+- Physical acceptance was not completed for this isolated profile before it
+  was superseded by combined v30.
 
 Application: 390,000 bytes, SHA-256
 `e9483172872c01cba925782d7acd3b219216a2efd5c7099188acf0368ebf8c24`.
@@ -52,4 +67,5 @@ C:\Python311\python.exe firmware/usb-diag/package.py --build firmware/usb-diag/b
 ```
 
 Installation uses the existing protected flash session workflow with checked
-baseline, plan and full image readback. This profile has performed no device IO.
+baseline, plan and full image readback. The build manifest retains
+`flashable: false`; it does not authorize direct flashing outside that workflow.

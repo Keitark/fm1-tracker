@@ -11,16 +11,17 @@ The initial research capture did not flash the device. Later bench operations
 are recorded under `docs/` and `private-backups/`. The unpacked metadata has
 had device security material redacted.
 
-The experimental [ProTracker-style MOD editor candidate](firmware/protracker/README.md)
+The experimental [ProTracker-style MOD editor](firmware/protracker/README.md)
 adds four-channel pattern editing, piano-key sample audition, REC-toggled WRITE,
 and USB `.MOD` load/save. State of the Art is embedded as a read-only boot song;
-3D Demo II and 9 Fingers remain in the PC library. Installed v25 passed full
-image readback and serial boot checks. The [v29 knob-only correction](firmware/protracker/profiles/knob-fix-v29/README.md)
-is built, packaged and host-tested; it awaits USB reconnection for flashing and
-physical verification. The separate v28 view/edit work is preserved for later
-testing. Its [offline preview](firmware/protracker/preview/fm1-tracker-screens.png)
-uses the firmware renderer. Scrolling speed and detailed audio behavior remain
-bench checks.
+3D Demo II and 9 Fingers remain in the PC library. **Installed v30** combines the
+four-track view and refined edit workflow developed in v28 with the encoder
+capture/backlog correction isolated in [v29](firmware/protracker/profiles/knob-fix-v29/README.md).
+It was flashed on 2026-10-04: 96 sectors and one full 1 MiB readback verified,
+and serial boot checks passed. [Deployment evidence](docs/MOD_VIEW_KNOBS_V30_DEPLOYMENT.md)
+records the installation. Its [offline preview](firmware/protracker/preview/fm1-tracker-screens.png)
+uses the installed firmware's renderer. Physical layout, knob response, audio,
+frame rate and scrolling latency remain bench checks.
 
 ## Repository contents
 

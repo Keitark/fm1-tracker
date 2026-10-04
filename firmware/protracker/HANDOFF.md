@@ -99,7 +99,7 @@ Desired behavior for both stopped editing and playback:
 
 ### Current source state
 
-The current `main` candidate (the v28 view code) already implements this model.
+The current `main` source (the v28 view incorporated into installed v30) implements this model.
 
 In `view.c`, the view chooses:
 
@@ -120,13 +120,15 @@ so pattern boundaries are visible instead of wrapping visually.
 
 ### Installed-device state
 
-The repository README currently records **v25 as the installed firmware**.
-The fixed-center pattern view belongs to the later **v28 candidate**, which is
-built/packaged but not yet flashed or physically accepted. Therefore an FM-1
-currently showing the play position moving from top to bottom is consistent
-with the installed v25 behavior, not the current v28 source candidate.
+**v30 is installed as of 2026-10-04**. It combines the v28 view/edit workflow
+with the encoder capture/backlog correction. Full image readback and serial
+boot observation passed. The renderer hash matches the saved preview manifest;
+physical display, knob response and audiovisual timing confirmation remain
+pending. The earlier v29 knob-only deployment retained the old v25 display and
+was superseded by v30. See the
+[deployment record](../../docs/MOD_VIEW_KNOBS_V30_DEPLOYMENT.md).
 
-When v28 or its successor is flashed, physically verify:
+For installed v30, physically verify:
 
 1. cursor remains fixed during PLAY,
 2. rows visibly move bottom-to-top,
