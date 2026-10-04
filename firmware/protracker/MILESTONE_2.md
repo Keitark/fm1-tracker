@@ -88,7 +88,7 @@ Package: **1,048,576 bytes**, SHA-256
 `8ffb01107fca32f5eb6c395be61cf0e86a623f4e3ceb955d15bedf8692583f63`.
 Nine checks passed: application round trip, directory/area/application/config
 CRCs, identical boot/config, identical reserved bytes, preserved offsets and
-unused application tail. Manifest remains `flashable: false`; no device I/O.
+unused application tail. Manifest remains `flashable: false`; packaging performs no device I/O.
 The private output is under `private-backups/usb-diag-candidates/<image-sha>/`.
 
 Renderer SHA-256:
@@ -103,8 +103,11 @@ entry into the editable MOD. `install-image` produces a PC representation only.
 
 ## Physical acceptance remains pending
 
-Installed hardware remains v30. This milestone does not write device flash.
-After a deliberate installation, run the plan's twelve-point physical checklist:
+v31 was deliberately installed on 2026-10-05 JST at the user's request.
+[Deployment evidence](../../docs/MOD_FAST_EDITOR_BANK_V31_DEPLOYMENT.md) records
+96-sector/full-image verification, CDC boot and 20-second playback telemetry
+with zero underruns/errors and approximately 25 UI counter updates/second.
+Run the remaining items of the plan's twelve-point physical checklist:
 one-detent channel/row movement, obvious field selection, fast KNOB3/4 editing,
 PRESETS/shortcuts, piano/WRITE, center-row song/pattern behavior, heard STOP
 position, block/arranger workflow, speaker/stereo outputs and scanner/underrun

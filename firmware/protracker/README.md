@@ -14,12 +14,14 @@ quick samples, rectangular block copy/paste, order arranging, an Active Bank,
 an original tutorial and empty NEW SONG. Build/test evidence and the physical
 acceptance checklist are in [MILESTONE_2.md](MILESTONE_2.md).
 
-**Installed hardware remains v30**, flashed on 2026-10-04 JST. Its protected
-96-sector verification, full 1 MiB readback and CDC boot observations are
-recorded in [the v30 deployment note](../../docs/MOD_VIEW_KNOBS_V30_DEPLOYMENT.md).
-v31 has not been flashed or physically accepted. The encoder capture/backlog
-correction is retained. Historical v29 provenance remains in
-[its profile](profiles/knob-fix-v29/README.md).
+**Installed hardware is v31**, flashed on 2026-10-05 JST. Its 96-sector
+verification, full 1 MiB readback, CDC boot and brief demo playback telemetry
+passed; the UI counter advanced at approximately 25 updates/second.
+[Deployment evidence](../../docs/MOD_FAST_EDITOR_BANK_V31_DEPLOYMENT.md) records
+these checks. Physical knobs, visual response and audible outputs remain on
+the acceptance checklist. The encoder capture/backlog correction is retained.
+Historical evidence remains in the [v30 deployment](../../docs/MOD_VIEW_KNOBS_V30_DEPLOYMENT.md)
+and [v29 profile](profiles/knob-fix-v29/README.md).
 
 ## Pattern workflow
 

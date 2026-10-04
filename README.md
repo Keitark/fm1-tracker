@@ -18,11 +18,12 @@ original 29-sample breakbeat bank and a self-contained tutorial MOD. Its
 candidate renderer. [Milestone evidence](firmware/protracker/MILESTONE_2.md)
 separates host/build verification from physical acceptance.
 
-**Installed hardware remains v30**, flashed on 2026-10-04, with 96-sector and
-full 1 MiB readback verification and serial boot checks. Its
-[deployment note](docs/MOD_VIEW_KNOBS_V30_DEPLOYMENT.md) records installation.
-The v31 candidate retains its encoder fix and needs deliberate installation
-and physical layout, knob response, audio, frame rate and scrolling checks.
+**Installed hardware is v31**, flashed on 2026-10-05, with 96-sector and full
+1 MiB readback verification, serial boot and brief demo playback checks.
+[Deployment evidence](docs/MOD_FAST_EDITOR_BANK_V31_DEPLOYMENT.md) records
+zero underruns/errors and approximately 25 UI counter updates/second.
+Physical layout, knob response, audible output and perceived scrolling remain
+acceptance checks. The v30 encoder fix is retained.
 
 ## Repository contents
 
