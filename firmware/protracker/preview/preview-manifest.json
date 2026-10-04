@@ -1,0 +1,112 @@
+{
+  "description": "Offline firmware render; physical FM-1 test pending.",
+  "renderer": "firmware/protracker/view.c",
+  "renderer_sha256": "0fef83044ae5cfbca25717f9dab35cf4e458928200d1294a08ab940fea5564aa",
+  "mod_sha256": "f74f635926482845decf2ecdf214e1f53f7100a41871609f5c6789940fc1ef14",
+  "geometry": [
+    240,
+    240
+  ],
+  "lcd_format": "RGB444 (upper bits truncated from RGB565)",
+  "states": {
+    "playing-song": {
+      "page": 0,
+      "running": 1,
+      "write": 0,
+      "sample_mode": 0,
+      "order": 0,
+      "row": 16,
+      "channel": 0,
+      "sample": 1,
+      "sha256": "476817bb5e4686a5a2bfac2547dd6037bca69c4e7f9298760199c907d08e4237"
+    },
+    "edit-audition": {
+      "page": 0,
+      "running": 0,
+      "write": 0,
+      "sample_mode": 0,
+      "order": 0,
+      "row": 18,
+      "channel": 2,
+      "sample": 7,
+      "sha256": "e70d4dd63ffd2b0b115243fa9442c4da18a4f01246ae3f0f73ca36007f8be812"
+    },
+    "write-note": {
+      "page": 0,
+      "running": 0,
+      "write": 1,
+      "sample_mode": 0,
+      "order": 0,
+      "row": 18,
+      "channel": 2,
+      "sample": 7,
+      "sha256": "b83ab6132415785f224a2befe3cf6aea58f469f8ce1379e6ff69653a9de7f97a"
+    },
+    "write-sample-parameters": {
+      "page": 0,
+      "running": 0,
+      "write": 1,
+      "sample_mode": 1,
+      "order": 0,
+      "row": 18,
+      "channel": 2,
+      "sample": 7,
+      "sha256": "1948ad84e6ab3e582218faec28fd1430b5695aad3a2e42fc55cda26c2f09307d"
+    },
+    "sample-list": {
+      "page": 2,
+      "running": 0,
+      "write": 0,
+      "sample_mode": 0,
+      "order": 0,
+      "row": 18,
+      "channel": 2,
+      "sample": 7,
+      "sha256": "e2770d8087852796441477b063957e314d82da8e2585c3a911f0f649946d95fc"
+    },
+    "usb-file-chooser": {
+      "page": 1,
+      "running": 0,
+      "write": 0,
+      "sample_mode": 0,
+      "order": 0,
+      "row": 18,
+      "channel": 2,
+      "sample": 7,
+      "sha256": "d3829d29cf05844f0dc34ff80a55c78fde078c29bb0c45dc666065ec589dd71b"
+    },
+    "playing-pattern": {
+      "page": 0,
+      "running": 2,
+      "write": 0,
+      "sample_mode": 0,
+      "order": 0,
+      "row": 16,
+      "channel": 1,
+      "sample": 2,
+      "sha256": "674085aa4feb7b5dd1460e112df9226cdec0cb1cd88baedfca554affc3040768"
+    },
+    "boundary-row00": {
+      "page": 0,
+      "running": 0,
+      "write": 0,
+      "sample_mode": 0,
+      "order": 0,
+      "row": 0,
+      "channel": 0,
+      "sample": 1,
+      "sha256": "0f833d60a3a0d5ea7bba2d34018b73c69e53e9f4569798ba4428766d1f493ecd"
+    },
+    "boundary-row63": {
+      "page": 0,
+      "running": 0,
+      "write": 1,
+      "sample_mode": 0,
+      "order": 0,
+      "row": 63,
+      "channel": 3,
+      "sample": 9,
+      "sha256": "80b31499950d12eda4cce5c3461694f9eb53dffece842ad959ea783e4bb6150b"
+    }
+  }
+}

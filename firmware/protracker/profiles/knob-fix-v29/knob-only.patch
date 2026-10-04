@@ -1,0 +1,86 @@
+--- v25/target.c
++++ knob-fix-v29/target.c
+@@ -39,7 +39,7 @@
+ static int16_t ring[2048][2],block[FM1_MOD_BLOCK*2];
+ static uint32_t rd,wr,frames,underruns;
+ static unsigned primed,audio_enabled,scan_enabled,scan_ticks,input_irq_registered,scan_retries;
+-static uint32_t scan_retry_at;
++static uint32_t scan_retry_at,encoder_sequence;
+ #ifdef FM1_LCD_ASYNC
+ #define UI_STRIP_ROWS 3u
+ #else
+@@ -130,7 +130,12 @@
+ ___interrupt static void fm1_mod_keyscan_isr(void){unsigned f=take(&input_lock);if(scan_enabled)fm1_wl82_keyscan_async_step(&scanner);release(&input_lock,f);}
+ static void fm1_mod_scan_tick(void *u){unsigned f=take(&input_lock);(void)u;
+     if(!(++scan_ticks&1))fm1_volume_tick(&mod_volume);
+-    if(scan_enabled)fm1_wl82_keyscan_async_kick(&scanner);
++    if(scan_enabled){
++        /* Decode before the next sweep replaces ready_rows; display work must
++         * not discard knob phases. Keep the stock stable-two filter. */
++        fm1_encoders_capture(&encoders,&encoder_sequence,scanner.sequence,scanner.ready_rows);
++        fm1_wl82_keyscan_async_kick(&scanner);
++    }
+     release(&input_lock,f);}
+ static void publish(void){unsigned f,fr,ur;f=take(&audio_lock);fr=frames;ur=underruns;release(&audio_lock,f);
+     f=take(&control_lock);control.frames=fr;control.underruns=ur;release(&control_lock,f);}
+@@ -476,7 +481,8 @@
+     if(!audio_error){audio_enabled=1;request_irq(IRQ_ALNK_IDX,3,fm1_test_alink_isr,0);iis_channel_on(8,0);}
+     f=take(&control_lock);control.available=1;release(&control_lock,f);
+     for(;;){
+-        unsigned op,running,queued,closing;uint32_t now=timer_get_ms();uint8_t rows[11];int scan_rc;
++        unsigned op,running,queued,closing,i;uint32_t now=timer_get_ms();
++        uint8_t rows[11];int scan_rc;int32_t counts[7];
+         f=take(&control_lock);op=control.request;control.request=0;control.executing=op!=0;
+         running=control.running;closing=control.shutdown;release(&control_lock,f);
+         if(closing)shutdown();
+@@ -491,18 +497,21 @@
+            (uint32_t)(now-scan_retry_at)>=250u){
+             ++scan_retries;bit_clr_ie(IRQ_SPI2_IDX,0);
+             f=take(&input_lock);scan_rc=fm1_wl82_keyscan_async_start(&scanner,0,now_us);
+-            if(!scan_rc)scan_enabled=1;
++            if(!scan_rc){
++                memset(&encoders,0,sizeof(encoders));encoder_sequence=0;scan_enabled=1;
++            }
+             release(&input_lock,f);
+             if(!scan_rc){
+                 request_irq(IRQ_SPI2_IDX,5,fm1_mod_keyscan_isr,0);input_irq_registered=1;
+-                key_error=0;candidate=stable=0;memset(&encoders,0,sizeof(encoders));
++                key_error=0;candidate=stable=0;
+                 memset(prior,0,sizeof(prior));memset(accum,0,sizeof(accum));
+             }else {key_error=scan_rc;scan_retry_at=now;}
+         }
+-        f=take(&input_lock);scan_rc=scan_enabled?fm1_wl82_keyscan_async_raw(&scanner,rows):FM1_NES_BUSY;release(&input_lock,f);
++        f=take(&input_lock);
++        scan_rc=scan_enabled?fm1_wl82_keyscan_async_raw(&scanner,rows):FM1_NES_BUSY;
++        memcpy(counts,encoders.count,sizeof(counts));release(&input_lock,f);
+         if(!scan_rc){
+-            uint64_t keys=fm1_stock_decode_keys(rows),down;unsigned i;
+-            fm1_encoders_sample(&encoders,rows);
++            uint64_t keys=fm1_stock_decode_keys(rows),down;
+             if(keys!=candidate){candidate=keys;changed=now;}
+             if((uint32_t)(now-changed)>=10 && candidate!=stable){
+                 uint64_t up=stable&~candidate;
+@@ -510,18 +519,15 @@
+                 for(i=0;i<41;i++)if((up>>i)&1u)input_key_release(i);
+                 for(i=0;i<41;i++)if((down>>i)&1u)input_key(i);
+             }
+-            for(i=0;i<7;i++)if(encoders.count[i]!=prior[i]){
+-                int32_t difference=encoders.count[i]-prior[i];prior[i]=encoders.count[i];
+-                if(difference>8)difference=8;if(difference< -8)difference=-8;accum[i]+=difference;
+-                /* All seven physical knobs report four decoded contact edges
+-                 * per detent on this panel. One click must make one edit. */
+-                while(accum[i]>=4){input_encoder(i,1);accum[i]-=4;}
+-                while(accum[i]<=-4){input_encoder(i,-1);accum[i]+=4;}
+-            }
+         } else if(scan_rc!=FM1_NES_BUSY && scan_enabled){
+             key_error=scan_rc;scan_retry_at=now;bit_clr_ie(IRQ_SPI2_IDX,0);
+             f=take(&input_lock);scan_enabled=0;fm1_wl82_keyscan_stop(&scanner);release(&input_lock,f);
+             if(input_irq_registered){unrequest_irq(IRQ_SPI2_IDX,0);input_irq_registered=0;}
++        }
++        if(scan_enabled)for(i=0;i<7;i++){
++            int steps=fm1_encoder_detents(counts[i],&prior[i],&accum[i]);
++            while(steps>0){input_encoder(i,1);steps--;}
++            while(steps<0){input_encoder(i,-1);steps++;}
+         }
+         if((uint32_t)(now-last_status)>=250){last_status=now;publish();}
+         if(!lcd_error && (queued>=1470 || !running)){

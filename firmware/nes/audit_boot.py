@@ -1,0 +1,518 @@
+"""Static ELF/application closure checks; does not certify physical bootability."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import struct
+from embed_rom50 import ROMS
+from audit_power import audit_power, call_target
+from audit_pre_os import audit_pre_os
+
+XIP=0x02000120
+RAM=0x01c00000
+RAM_LIMIT=0x01c7fd4c
+APP_BUDGET=512*1024  # Deliberately conservative code budget, not a flash offset.
+PARTS=('.text','.data','.dynamic_data','.ram0_data','.cache_ram_data')
+
+
+def require(condition,message):
+    if not condition: raise ValueError(message)
+
+
+def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,require_boot_trace=False,require_board_power=False,require_screen_first=False,usb_only=False,usb_peripheral_tests=False,usb_nes=False,usb_mdx=False,usb_audio=False,usb_mod=False):
+    require(not usb_audio or usb_mdx,'Composite audio requires the MDX profile')
+    require(not usb_nes or (usb_only and usb_peripheral_tests and rom=='smb1'),'NES CDC requires explicit SMB1 peripheral profile')
+    require(not usb_mdx or (usb_only and usb_peripheral_tests and not usb_nes),'MDX requires a separate CDC peripheral profile')
+    require(not usb_mod or (usb_only and usb_peripheral_tests and not usb_nes and not usb_mdx),'MOD requires a separate CDC peripheral profile')
+    require(not usb_peripheral_tests or usb_only,'Peripheral diagnostic requires USB transport audit')
+    require(not usb_only or not (require_peripherals or display_only or require_screen_first),'Conflicting USB-only audit')
+    require(not(display_only and require_peripherals),'Conflicting diagnostic/peripheral audit')
+    require(rom in ROMS,'Unknown cartridge')
+    rom_size,_,rom_sha=ROMS[rom]
+    require(len(elf)>=52 and elf[:7]==b'\x7fELF\x01\x01\x01','Expected ELF32 little endian')
+    header=struct.unpack_from('<HHIIIIIHHHHHH',elf,16)
+    kind,machine,version,entry,_,shoff,_,_,_,_,shsize,shcount,shstr=header
+    require(kind==2 and machine==0xf1 and version==1,'Expected pi32v2 executable')
+    require(entry==XIP,'Wrong FM-1 XIP entry')
+    require(shsize==40 and shcount>0 and shstr<shcount and shoff+shcount*40<=len(elf),'Invalid section table')
+    raw=[struct.unpack_from('<10I',elf,shoff+i*40) for i in range(shcount)]
+    def data(s):
+        require(s[4]+s[5]<=len(elf),'Section extends beyond ELF')
+        return elf[s[4]:s[4]+s[5]]
+    names=data(raw[shstr])
+    def string(table,offset):
+        require(offset<len(table),'String offset out of range')
+        end=table.find(b'\0',offset)
+        require(end>=0,'Unterminated string')
+        return table[offset:end].decode('utf-8')
+    sections={string(names,s[0]):s for s in raw}
+    for name in PARTS+('.ram0_bss','.boot_info','.symtab'):
+        require(name in sections,'Missing section '+name)
+    require(sections['.text'][3]==XIP and not sections['.text'][2]&1,'Bad XIP text mapping')
+    for name in ('.data','.bss','.dynamic_data','.dynamic_bss'):
+        require(name in sections and sections[name][5]==0,'External SDRAM is not present: '+name)
+    allowed=set(PARTS)|{'.ram0_bss','.boot_info','.cache_ram_bss'}
+    for name,s in sections.items():
+        if s[2]&2 and s[5]: require(name in allowed,'Unexpected allocated section '+name)
+    for name in ('.ram0_data','.ram0_bss'):
+        s=sections[name]
+        require(RAM<=s[3] and s[3]+s[5]<=RAM_LIMIT,'RAM overflow: '+name)
+    require(sections['.ram0_bss'][3]>=sections['.ram0_data'][3]+sections['.ram0_data'][5],'RAM overlap')
+    for name in ('.cache_ram_data','.cache_ram_bss'):
+        s=sections[name]
+        require(0x1f28000<=s[3] and s[3]+s[5]<=0x1f2f000,'Cache RAM overflow')
+    boot=sections['.boot_info']
+    require(boot[3]==RAM_LIMIT and boot[5]==52,'Boot-info ABI differs from SDK')
+    packed=b''.join(data(sections[name]) for name in PARTS)
+    require(app==packed,'Application differs from exact vendor section concatenation')
+    require(0<len(app)<=APP_BUDGET,'Application exceeds conservative code budget')
+    symtab=sections['.symtab'];strings=data(raw[symtab[6]])
+    require(symtab[9]==16 and symtab[5]%16==0,'Invalid symbol table')
+    symbols={}
+    for off in range(0,symtab[5],16):
+        name,value,size,info,other,index=struct.unpack_from('<IIIBBH',data(symtab),off)
+        name=string(strings,name)
+        require(not(name and index==0 and info>>4 in (1,2)),'Unresolved symbol '+name)
+        if name: symbols[name]=(value,size,index)
+    def value(name):
+        require(name in symbols,'Missing startup symbol '+name)
+        return symbols[name][0]
+    def code_at(address,size):
+        owner=next((s for s in sections.values() if s[2]&2 and s[1]!=8 and
+                    s[3]<=address and address+size<=s[3]+s[5]),None)
+        require(owner is not None,'Startup code outside image')
+        return data(owner)[address-owner[3]:address-owner[3]+size]
+    def long_call_target(address):
+        code=code_at(address,6)
+        require(code[:2]==b'\x80\xff','Expected reviewed startup long call')
+        return address+6+struct.unpack_from('<i',code,2)[0]
+    require(not any(name in symbols for name in ('fm1_tile_test_reference',
+            'fm1_reference_background','fm1_reference_sprite')),'Host tile oracle linked into target')
+    if 'fm1_volume_start' in symbols:
+        require((usb_nes and 'fm1_nes_scan_tick' in symbols) or (usb_mdx and 'fm1_mdx_scan_tick' in symbols) or (usb_mod and 'fm1_mod_scan_tick' in symbols),'Volume requires paced player profile')
+        require(all(name in symbols for name in ('fm1_volume_tick','fm1_volume_stop','mdx_volume' if usb_mdx else 'mod_volume' if usb_mod else 'nes_volume')),
+                'Missing volume reader lifecycle')
+        require(not any(name in symbols for name in ('adc_init','adc_isr','adc_scan')),
+                'Volume ADC has competing SDK owner')
+        if not (usb_mdx or usb_mod):require(b'VOLUME adc=4 gpio=PB6 raw=' in app,'Missing volume telemetry')
+    if 'fm1_tile_expand' in symbols:
+        address,size,_=symbols['fm1_tile_expand']
+        ram=sections['.ram0_data']
+        require(size==512 and address%4==0 and ram[3]<=address and
+                address+size<=ram[3]+ram[5],'Tile table must occupy aligned initialized internal RAM')
+        expected=struct.pack('<256H',*(sum(((x>>bit)&1)<<(2*bit)
+                for bit in range(8)) for x in range(256)))
+        require(code_at(address,size)==expected,'Tile table data differs from bitplane expansion')
+    # Pinned compiler output: six volatile source words -> 92-byte stack
+    # buffer, zero words 6..22, one call to the original SDK initializer.
+    # This is deliberately fail-closed on compiler/codegen changes; review
+    # the disassembly before changing this whitelist.
+    bridge=value('__wrap_boot_info_init')
+    require(symbols['__wrap_boot_info_init'][1]==54,'Boot bridge code size changed')
+    bridge_code=code_at(bridge,54)
+    bridge_prefix=bytes.fromhex(
+        '10 04 e2 89 41 20 04 86 d8 ec 0a 21 8b 80 d8 ec 3b 21 c1 21 '
+        '81 f8 f8 0d 40 26 41 20 04 84 8a 80 d8 ec 2b 10 c0 21 '
+        '80 f8 fa 2f 88 80')
+    require(bridge_code[:44]==bridge_prefix and bridge_code[50:]==bytes.fromhex('02 97 00 04'),
+            'Boot bridge prefix/zero-fill instructions changed')
+    require(long_call_target(bridge+44)==value('boot_info_init'),'Boot bridge bypasses SDK initializer')
+    startup=value('chip_entry')
+    require(code_at(startup,2)==b'\xee\xff' and code_at(startup+6,2)==b'\xed\xff',
+            'Startup must set SP/SSP before boot bridge')
+    require(long_call_target(startup+12)==bridge,'Startup bypasses boot compatibility bridge')
+    # Check executed operands/loops, not just linker symbols. The old checks
+    # could accept a corrupted SP, RAM-copy immediate or main jump when both
+    # ELF and flat application contained the same corruption.
+    traced='__wrap_memory_init' in symbols
+    require(not require_boot_trace or traced,'Missing refined boot trace')
+    memory_target=value('__wrap_memory_init') if traced else value('memory_init')
+    startup_code=bytearray.fromhex(
+        'ee ff b8 71 c1 01 ed ff b8 81 c1 01 80 ff 46 1e 00 00 '
+        'c3 ff a0 16 c0 01 41 20 c2 ff f0 7e 01 00 a2 a2 02 03 b1 05 f2 5d '
+        'c4 ff 00 00 c0 01 c1 ff 00 77 02 02 c2 ff a0 16 00 00 a2 a2 '
+        '12 03 13 05 c3 05 f2 5c 80 ff 14 01 00 00 03 16 '
+        'c0 ff 20 01 00 04 c1 ff 00 77 02 02 c2 ff 00 00 00 00 '
+        '01 e8 04 00 80 ff f8 00 00 00 30 16 c3 ff 20 01 00 04 '
+        '41 20 c2 ff 00 00 00 00 a2 a2 02 03 b1 05 f2 5d '
+        '80 ff 9e 09 c0 ff 80 ff ba 43 02 00 80 ff 20 11 00 00 '
+        'c6 ff 72 0c 00 02 d6 00')
+    for offset,name in ((2,'_cpu0_ustack'),(8,'_cpu0_sstack'),
+                        (20,'_ram0_bss_vma'),(28,'_ram0_bss_size'),
+                        (42,'_ram0_data_vma'),(48,'_ram0_data_lma'),(54,'_ram0_data_size'),
+                        (84,'_ram0_data_lma'),(148,'main')):
+        struct.pack_into('<I',startup_code,offset,value(name))
+    calls={12:bridge,68:value('boot_init_after_ram_ready'),98:value('boot_memmove'),
+           128:value('cache_way_config'),134:memory_target,140:value('update_result_get')}
+    for offset,target in calls.items():struct.pack_into('<i',startup_code,offset+2,target-(startup+offset+6))
+    require(startup==XIP+0x6a and code_at(XIP,2)==bytes.fromhex('14 94'),
+            'Startup entry branch changed')
+    require(code_at(startup,len(startup_code))==startup_code,'Startup instruction/operand sequence changed')
+    bss=sections['.ram0_bss']
+    require(bss[3]<=value('_stack_info_begin')<=value('_cpu0_ustack')-96 and
+            value('_cpu0_ustack')+4096==value('_cpu0_sstack')<=value('_cpu1_ustack')-96 and
+            value('_cpu1_ustack')+4096==value('_cpu1_sstack')<=bss[3]+bss[5],
+            'Startup stack bounds changed')
+    require(value('_ram0_data_size')%4==0 and value('_ram0_bss_size')%4==0,
+            'Startup word loops need aligned lengths')
+    cache=value('cache_way_config')
+    require(code_at(cache+2,12)==bytes.fromhex('c1 ff 00 00 00 00 c2 ff 07 00 00 00'),
+            'Cache way configuration changed')
+    require(code_at(cache+0xe2,18)==b'\xc0\xff'+struct.pack('<I',0x1f28000)+
+            b'\xc1\xff'+struct.pack('<I',value('cache_ram_data_lma'))+
+            b'\xc2\xff'+struct.pack('<I',sections['.cache_ram_data'][5]),
+            'Cache RAM copy operands changed')
+    require(long_call_target(cache+0xf4)==value('memmove'),'Cache RAM copy call changed')
+    require(symbols['memory_init'][1]==2 and code_at(value('memory_init'),2)==b'\x80\x00',
+            'Reviewed SDK memory hook changed')
+    if traced:
+        address,size,_=symbols['fm1_boot_trace']
+        require(size==16 and bss[3]<=address and address+size<=bss[3]+bss[5],
+                'Boot trace outside initialized RAM')
+        trace_size=46 if usb_only else 44
+        require(symbols['__wrap_memory_init'][1]==trace_size,'Boot trace wrapper layout changed')
+        wrapper=code_at(memory_target,trace_size)
+        expected_wrapper=bytearray.fromhex(
+            '10 04 c0 ff 00 00 00 00 c1 ff 54 42 4d 46 81 60 '
+            '41 21 81 61 42 ea 00 00 40 21 00 00 00 00 '
+            '80 ff 00 00 00 00 40 22 00 00 00 00 00 04')
+        struct.pack_into('<I',expected_wrapper,4,address)
+        if usb_only:
+            # Reviewed USB links merge the trace at ota_status+176 and use
+            # a writeback store instead of the NES direct-base store.
+            delta=address-value('ota_status')
+            encodings={176:'d0 ec 03 1b',180:'d0 ec 07 1b'}
+            if usb_peripheral_tests:encodings.update({228:'d0 ec 07 1e',244:'d0 ec 07 1f'})
+            # Reviewed NES CDC links: same writeback store. KEYSPI diagnostic
+            # disassembly stores at ota_status 0x1c196f0 + 284 = trace 0x1c1980c.
+            # Input-recovery link: ota_status 0x1c19a30 + 308 = trace
+            # 0x1c19b64; reviewed __wrap_memory_init store at 0x2003362.
+            # IRQ link: ota_status 0x1c19a30 +316 = trace 0x1c19b6c,
+            # store at0x200336e; same 46-byte wrapper and22-byte marker.
+            # Audio-priority link: ota_status0x1c19a40 +312 = trace0x1c19b78;
+            # reviewed store0x200336e is d1 ec 0b 13. Wrapper/marker unchanged.
+            # Live-FX link: ota_status0x1c19a40 +324 = trace0x1c19b84;
+            # reviewed store0x2003370 is d1 ec 07 14. Same wrapper/marker.
+            if usb_nes:encodings.update({280:'d1 ec 0b 11',284:'d1 ec 0f 11',288:'d1 ec 03 12',308:'d1 ec 07 13',312:'d1 ec 0b 13',316:'d1 ec 0f 13',324:'d1 ec 07 14'})
+            # Profiling link: ota_status0x1c1a5f0 +340 = trace0x1c1a744;
+            # reviewed __wrap_memory_init0x2003362, store0x2003370:
+            # d1 ec 07 15 = [++r0=340] = r1. Same46-byte wrapper/22-byte marker.
+            if usb_nes:encodings.update({340:'d1 ec 07 15'})
+            # MDX standalone profile: reviewed store at ota_status+300,
+            # d1 ec 0f 12 is [++r0=300]=r1; same startup wrapper contract.
+            # Panel/octave link: ota_status0x1c4b910 +336 = trace0x1c4ba60;
+            # reviewed store0x200276c: d1 ec 03 15 = [++r0=336]=r1.
+            if usb_mdx:encodings.update({300:'d1 ec 0f 12',312:'d1 ec 0b 13',316:'d1 ec 0f 13',336:'d1 ec 03 15'})
+            # Screenshot CDC link: ota_status0x1c4b910 +340 = trace0x1c4ba64;
+            # reviewed store0x200276c: d1 ec 07 15. Same wrapper/marker.
+            if usb_mdx:encodings.update({340:'d1 ec 07 15'})
+            # MOD editor links: the PC catalog moves the merged trace to
+            # ota_status+340; disassembly at 0x2002760 has the same reviewed
+            # [++r0] store (d1 ec 07 15), with the 46-byte wrapper unchanged.
+            # Four-channel grid link: ota_status0x1c47630 +344 =
+            # trace0x1c47788; reviewed store0x2002760 is d1 ec 0b 15.
+            # Status-counter link: ota_status0x1c47630 +352 = trace0x1c47790;
+            # reviewed store0x2002766 is d1 ec 03 16. Wrapper unchanged.
+            # RGB444 async MOD link: ota_status 0x1c5c7b0 +364 = trace
+            # 0x1c5c91c; the reviewed wrapper store is [++r0=364]=r1.
+            # Scope/recovery MOD link: ota_status 0x1c5be40 +368 = trace
+            # 0x1c5bfb0; reviewed store at 0x200276c is [++r0=368]=r1.
+            if usb_mod:encodings.update({328:'d1 ec 0b 14',332:'d1 ec 0f 14',336:'d1 ec 03 15',340:'d1 ec 07 15',344:'d1 ec 0b 15',352:'d1 ec 03 16',364:'d1 ec 0f 16',368:'d1 ec 03 17'})
+            # Knob-only v29 adds the four-byte captured sequence. Reviewed
+            # ota_status 0x1c5be40 +372 = trace 0x1c5bfb4; at 0x200276c
+            # d1 ec 07 17 is [++r0=372]=r1. Wrapper/marker otherwise unchanged.
+            if usb_mod:encodings.update({372:'d1 ec 07 17'})
+            # Composite link: ota_status0x1c4db50 +344 = trace0x1c4dca8;
+            # reviewed store0x200276c: d1 ec 0b 15. Wrapper otherwise unchanged.
+            if usb_audio:encodings.update({344:'d1 ec 0b 15'})
+            # Screenshot composite link: ota_status0x1c4db50 +348 = trace0x1c4dcac;
+            # reviewed store0x200276c: d1 ec 0f 15. Same wrapper/marker.
+            if usb_audio:encodings.update({348:'d1 ec 0f 15'})
+            # Audio diagnostics link: ota_status0x1c4db90 +380 = trace0x1c4dd0c;
+            # reviewed store0x2002774: d1 ec 0f 17. Same46-byte wrapper/marker.
+            if usb_audio:encodings.update({380:'d1 ec 0f 17'})
+            require(delta in encodings,'USB trace merged-global offset changed: '+str(delta))
+            struct.pack_into('<I',expected_wrapper,4,value('ota_status'))
+            expected_wrapper[14:16]=bytes.fromhex(encodings[delta])
+        for off in ((28,40) if usb_only else (26,38)):
+            call=wrapper[off:off+4]
+            require(call[0]&0xc0==0x80 and call[1]==0xea,'Boot trace mark call changed')
+            relative=((call[0]&0x3f)<<16)|int.from_bytes(call[2:],'little')
+            if relative & (1<<21):relative-=1<<22
+            require(memory_target+off+4+relative*2==value('fm1_boot_trace_mark'),
+                    'Boot trace mark target changed')
+            expected_wrapper[off:off+4]=call
+        struct.pack_into('<i',expected_wrapper,34 if usb_only else 32,value('memory_init')-(memory_target+(38 if usb_only else 36)))
+        require(wrapper==expected_wrapper,'Boot trace wrapper instructions changed')
+        marker=(bytes.fromhex('31 e1 ff 0f b1 ec 05 80 c1 ff')+struct.pack('<I',address)+
+                bytes.fromhex('66 e8 08 10 90 63 80 00'))
+        if usb_only:
+            marker=(bytes.fromhex('31 e1 ff 0f b1 ec 05 80 c1 ff')+struct.pack('<I',address+8)+
+                    bytes.fromhex('66 e8 00 10 90 61 80 00'))
+        require(symbols['fm1_boot_trace_mark'][1]==len(marker) and
+                code_at(value('fm1_boot_trace_mark'),len(marker))==marker,'Boot trace marker changed')
+    cfg_start=value('syscfg_ops_begin');cfg_end=value('syscfg_ops_end')
+    require(cfg_end-cfg_start==28 and value('cfg_bin')==cfg_start and symbols['cfg_bin'][1]==28,
+            'Unexpected persistent configuration registry')
+    require('cfg_vm' not in symbols and 'cfg_btif' not in symbols,
+            'Persistent VM/BTIF auto-repair registrations present')
+    cfg_words=struct.unpack('<7I',code_at(cfg_start,28))
+    require(cfg_words[0]==value('syscfg_file_init'),'Configuration init is not the file reader')
+    require(cfg_words[3]==0 and cfg_words[4]==0,'Configuration registry exposes write callbacks')
+    require(tuple(cfg_words[i] for i in (1,2,5,6))==tuple(value(n) for n in
+            ('syscfg_bin_check_id','syscfg_bin_read','syscfg_bin_group_read','syscfg_bin_ptr_read')),
+            'Configuration read callbacks changed')
+    # Retain and verify all startup registration groups. This change must not
+    # remove the SDK integrity-check initcall, nor skip its runtime machinery.
+    init_groups={
+        'early_initcall':('app_version_check','sys_event_init','thread_fork_init','sdfile_init'),
+        'platform_initcall':('syscfg_tools_init',),
+        'initcall':('app_update_init',),
+        'module_initcall':('wait_completion_init',),
+        'late_initcall':('sdk_meky_check',),
+    }
+    init_report={}
+    for group,expected in init_groups.items():
+        begin=value(group+'_begin');end=value(group+'_end')
+        require(end-begin==4*len(expected),'SDK initcall group changed: '+group)
+        pointers=struct.unpack('<'+'I'*len(expected),code_at(begin,end-begin))
+        require(pointers==tuple(value(name) for name in expected),'SDK initcall targets changed: '+group)
+        init_report[group]=list(expected)
+    # In this LTO link, sys_timeout_add is specialized for the SDK's delayed
+    # integrity callback. Verify scheduling, not a hardware-dependent outcome.
+    integrity=value('sdk_meky_check');timeout=value('sys_timeout_add')
+    require(symbols['sdk_meky_check'][1]==62,'SDK integrity initializer layout changed')
+    require(code_at(integrity+2,6)==b'\xc4\xff'+struct.pack('<I',value('isr_check_key')),
+            'SDK integrity ISR registration changed')
+    require(long_call_target(integrity+16)==value('request_irq') and
+            long_call_target(integrity+30)==value('request_irq') and
+            long_call_target(integrity+54)==timeout,'SDK integrity scheduling calls changed')
+    require(symbols['sys_timeout_add'][1]==26 and
+            long_call_target(timeout+2)==value('os_current_task') and
+            code_at(timeout+8,6)==b'\xc1\xff'+struct.pack('<I',value('_mkey_check')) and
+            code_at(timeout+14,4)==bytes.fromhex('42 e0 40 1f'),
+            'SDK delayed integrity callback or 8000 ms timeout changed')
+    task_table=value('task_info_table')
+    expected_tasks=(('app_core',15,4096,1024),('sys_event',29,512,0),
+                    ('systimer',14,256,0),('sys_timer',9,512,128),
+                    (('usb_diag',10,2048,0) if usb_only else ('fm1_nes',10,4096,0)))
+    if usb_peripheral_tests:expected_tasks+=(('peripheral',8,4096 if (usb_nes or usb_mdx or usb_mod) else 2048,0),)
+    require(symbols['task_info_table'][1]==20*(len(expected_tasks)+1),
+            'SDK/NES task table size changed')
+    for i,(name,priority,stack,queue) in enumerate(expected_tasks):
+        ptr,prio,stk,q,static_mem=struct.unpack('<IB3xIH2xI',code_at(task_table+20*i,20))
+        require(code_at(ptr,len(name)+1)==name.encode()+b'\0' and
+                (prio,stk,q,static_mem)==(priority,stack,queue,0),
+                'SDK/NES task registration changed: '+name)
+    require(code_at(task_table+20*len(expected_tasks),20)==bytes(20),'Task table terminator changed')
+    worker='fm1_usb_task' if usb_only else 'fm1_nes_task'
+    require(symbols.get(worker,(0,0,0))[1]>0,'Missing separate worker task')
+    peripheral_symbols=('fm1_alink_isr','fm1_wl82_run_with_stats','fm1_wl82_keyscan_poll',
+                        'fm1_audio_startup_process24','fm1_sdk_diag','iis_open','iis_irq_handler')
+    if require_peripherals:
+        for name in peripheral_symbols:require(name in symbols,'Missing integrated peripheral '+name)
+        diag=symbols['fm1_sdk_diag'];s=sections['.ram0_bss']
+        require(s[3]<=diag[0] and diag[0]+diag[1]<=s[3]+s[5],'SDK diagnostics outside BSS')
+        # The SDK interrupt attribute must generate rti (81 00), not a normal
+        # function epilogue. Symbol bounds stop us matching another function.
+        address,size,_=symbols['fm1_alink_isr']
+        owner=next((s for s in sections.values() if s[2]&2 and s[1]!=8 and
+                    s[3]<=address and address+size<=s[3]+s[5]),None)
+        require(owner is not None and size>=2,'ISR has no executable bytes')
+        code=data(owner)[address-owner[3]:address-owner[3]+size]
+        require(code[-2:]==b'\x81\x00','ALINK wrapper lacks interrupt return')
+    require(value('_start')==XIP,'_start is not at image entry')
+    runtime_states=('fm1_usb_stage','fm1_usb_heartbeat','fm1_usb_tx_dropped','fm1_usb_error') if usb_only else (
+        (() if display_only else ('machine',))+('fm1_boot_stage','fm1_boot_result','fm1_boot_stats',
+                 'fm1_boot_elapsed_ms','fm1_boot_heartbeat','fm1_boot_task_error'))
+    for name in runtime_states:
+        require(name in symbols,'Missing runtime state '+name)
+        addr,size,_=symbols[name];s=sections['.ram0_bss']
+        require(s[3]<=addr and addr+size<=s[3]+s[5],'State outside initialized BSS: '+name)
+    if usb_only:
+        forbidden=('msd_register','hid_register','uac_register')
+        if not usb_nes:forbidden+=('machine','cartridge','fm1_nes_run','fm1_nes_player_run')
+        else:
+            for name in ('fm1_nes_player_run','fm1_board_run','fm1_display_write','fm1_audio_startup_process24'):
+                require(name in symbols,'Missing NES CDC component '+name)
+            require(symbols['machine'][1]==69240,'Unexpected NES state layout')
+            addr,size,_=symbols['machine']
+            require(bss[3]<=addr and addr+size<=bss[3]+bss[5],'NES state outside initialized internal RAM')
+            require(b'NES=SMB1' in app,'Missing NES serial identity')
+        if not usb_peripheral_tests:forbidden+=('fm1_display_test_init','iis_open','fm1_wl82_keyscan_start','fm1_alink_isr')
+        for name in forbidden:
+            require(name not in symbols,'USB-only image contains forbidden component '+name)
+        for name in ('cdc_read_data','cdc_write_data','fm1_cdc_ready','fm1_usb_dma','fm1_diag_feed'):
+            require(name in symbols,'Missing USB diagnostic '+name)
+        descriptor=bytes((18,1,0,2,2,2,1,64,0x54,0x36,0x55,0x51,0,2,1,2,0,1))
+        if usb_audio:descriptor=bytes((18,1,0,2,0xef,2,1,64,0x54,0x36,0x55,0x51,3,2,1,2,0,1))
+        if usb_audio:
+            for name in ('fm1_uac_desc_config','fm1_usb_audio_dac','fm1_usb_audio_stop','fm1_uac_descriptor','fm1_uac_dma'):
+                require(name in symbols,'Missing composite audio component '+name)
+            audio_dma,audio_size,_=symbols['fm1_uac_dma']
+            require(audio_size==512 and audio_dma%64==0 and bss[3]<=audio_dma and audio_dma+audio_size<=bss[3]+bss[5],
+                    'Audio DMA size/alignment/internal-RAM placement changed')
+            require(symbols['fm1_uac_descriptor'][1]==173 and hashlib.sha256(code_at(value('fm1_uac_descriptor'),173)).hexdigest()==
+                    '820961a648e4bf17faa19a3bdd788f7a70205ff0600b5fbb35c069deb7219d8d',
+                    'UAC1 interface/terminal/format/endpoint descriptor changed')
+        require(code_at(value('fm1_usb_device_descriptor'),18)==descriptor,
+                'USB CDC device descriptor changed')
+        require(code_at(value('fm1_usb_config_descriptor'),9)==bytes((9,2,0,0,0,1,0,0x80,50)),
+                'USB configuration descriptor changed')
+        dma,dma_size,_=symbols['fm1_usb_dma']
+        require(dma%64==0 and dma_size==1024 and bss[3]<=dma and dma+dma_size<=bss[3]+bss[5],
+                'USB DMA alignment/size/placement changed')
+        require('usb0_g_isr' in symbols and 'usb1_g_isr' not in symbols,
+                'Only the reviewed USB0 candidate is currently audited')
+        irq,irq_size,_=symbols['usb0_g_isr']
+        require(code_at(irq+irq_size-2,2)==b'\x81\x00','USB ISR lacks interrupt return')
+        boot_enabled='go_mask_usb_updata' in symbols
+        if boot_enabled:
+            boot=value('go_mask_usb_updata');nvram=value('nvram_set_boot_state')
+            require(symbols['go_mask_usb_updata'][1]==40 and
+                    sections['.ram0_data'][3]<=boot<sections['.ram0_data'][3]+sections['.ram0_data'][5],
+                    'UBOOT entry not in RAM or changed size')
+            expected=bytearray.fromhex('00 00 00 00 c0 ff 00 00 00 00 64 e0 00 16 d8 ec 0a 21 2b 81 d8 ec 0b 31 82 41 41 00 20 00 40 22 80 ff 00 00 00 00 f7 9f')
+            require(call_target(code_at(boot,4),boot)==value('__local_irq_disable'),'UBOOT IRQ disable changed')
+            expected[:4]=code_at(boot,4)
+            struct.pack_into('<I',expected,6,value('cpu_lock_cnt'))
+            struct.pack_into('<i',expected,34,nvram-(boot+38))
+            require(code_at(boot,40)==expected,'UBOOT entry instructions changed')
+            require(symbols['nvram_set_boot_state'][1]==36,'UBOOT retained marker writer size changed')
+            marker=struct.unpack('<I',code_at(nvram+8,4))[0]
+            require(code_at(marker,16)==b'usb_update_mode\0','UBOOT retained marker changed')
+            expected=bytearray.fromhex('c0 ff 80 fd c7 01 c1 ff 00 00 00 00 42 30 80 ff 00 00 00 00 68 20 41 24 42 21 43 21 80 ff 00 00 00 00 f7 9f')
+            struct.pack_into('<I',expected,8,marker)
+            struct.pack_into('<i',expected,16,value('memmove')-(nvram+20))
+            struct.pack_into('<i',expected,30,value('P33_CON_SET')-(nvram+34))
+            require(code_at(nvram,36)==expected,'UBOOT retained marker/reset instructions changed')
+            callback=value('cdc_wakeup_handler')
+            require(symbols['cdc_wakeup_handler'][1]==8 and code_at(callback,2)==b'\x10\x04' and
+                    code_at(callback+6,2)==b'\x00\x04' and
+                    call_target(code_at(callback+2,4),callback+2)==value('fm1_usb_rx_irq'),'UBOOT direct RX interrupt path changed')
+            irq_entry,irq_length,_=symbols['fm1_usb_rx_irq']
+            require(long_call_target(irq_entry+irq_length-8)==boot and code_at(irq_entry+irq_length-2,2)==b'\xf7\x9f',
+                    'UBOOT entry no longer dispatched from RX IRQ')
+        if usb_peripheral_tests:
+            require(boot_enabled,'Peripheral diagnostic must preserve UBOOT')
+            for name in ('fm1_peripheral_task','fm1_display_test_init','fm1_wl82_keyscan_async_raw' if (usb_mdx or usb_mod) else 'fm1_wl82_keyscan_raw','iis_open','iis_irq_handler','fm1_test_alink_isr'):
+                require(name in symbols,'Missing peripheral test '+name)
+            address,size,_=symbols['fm1_test_alink_isr']
+            require(code_at(address+size-2,2)==b'\x81\x00','Test ALINK ISR lacks interrupt return')
+            if usb_mdx:
+                for name in ('fm1_mdx_load','fm1_mdx_render','fm1_mdx_usb_command','fm1_mdx_keyscan_isr','fm1_demo_mdx','fm1_demo_pdx','upload','player'):
+                    require(name in symbols,'Missing MDX integration '+name)
+                address,size,_=symbols['fm1_mdx_keyscan_isr']
+                require(code_at(address+size-2,2)==b'\x81\x00','MDX scanner lacks interrupt return')
+                for name in ('fm1_demo_mdx','fm1_demo_pdx'):
+                    address,size,index=symbols[name]
+                    owner=next(s for s in sections.values() if s[3]<=address and address+size<=s[3]+s[5])
+                    require(owner[1]!=8 and not (owner[2]&1),'Demo must be read-only flash')
+            if usb_mod:
+                for name in ('fm1_mod_open','fm1_mod_render','fm1_mod_usb_command','fm1_mod_keyscan_isr','song','player'):
+                    require(name in symbols,'Missing MOD editor '+name)
+                require(any(n=='transfer' or n.startswith('transfer.') for n in symbols),'Missing MOD transfer state')
+                address,size,_=symbols['fm1_mod_keyscan_isr']
+                require(code_at(address+size-2,2)==b'\x81\x00','MOD scanner lacks interrupt return')
+            if 'fm1_nes_keyscan_isr' in symbols:
+                address,size,_=symbols['fm1_nes_keyscan_isr']
+                require(code_at(address+size-2,2)==b'\x81\x00','Keyscan ISR lacks interrupt return')
+            require(code_at(value('fm1_encoder_contacts'),14)==bytes.fromhex('10 20 30 40 91 a1 90 a0 70 80 50 60 15 25'),
+                    'Stock encoder contact mapping changed')
+            if 'fm1_key_dma' in symbols:
+                address,size,_=symbols['fm1_key_dma']
+                require(address%64==0 and size==64 and bss[3]<=address and address+size<=bss[3]+bss[5],
+                        'Key scanner DMA must occupy aligned internal RAM BSS')
+            if 'fm1_lcd_dma_params' in symbols:
+                address,size,_=symbols['fm1_lcd_dma_params']
+                require(size==64 and address%64==0 and bss[3]<=address and address+size<=bss[3]+bss[5],
+                        'LCD DMA parameters must occupy aligned internal RAM BSS')
+                require('fm1_display_snapshot' in symbols,'LCD DMA variant lacks fixed-register diagnostics')
+            if 'fm1_lcd_dma_pixels' in symbols:
+                require(usb_nes or usb_mdx or usb_mod,'Large LCD DMA buffer only allowed in player profile')
+                address,size,_=symbols['fm1_lcd_dma_pixels']
+                require(size==3840 and address%64==0 and bss[3]<=address and address+size<=bss[3]+bss[5],
+                        'LCD pixel DMA must occupy aligned internal RAM BSS')
+            if 'fm1_lcd_frames' in symbols:
+                require(usb_nes or usb_mod,'Async LCD only allowed in NES or MOD CDC profile')
+                address,size,_=symbols['fm1_lcd_frames']
+                frame_bytes=(86400 if usb_mod else 172800) if ('fm1_lcd_pack_rgb444' in symbols or 'fm1_lcd_pack_native_rgb444' in symbols) else (115200 if usb_mod else 230400)
+                require(size==frame_bytes and address%64==0 and bss[3]<=address and address+size<=bss[3]+bss[5],
+                        'Async LCD frames must occupy aligned internal RAM BSS')
+                address,size,_=symbols['fm1_lcd_spi1_isr']
+                require(code_at(address+size-2,2)==b'\x81\x00','LCD SPI1 ISR lacks interrupt return')
+                require(value('HEAP_END')-value('HEAP_BEGIN')>=128*1024,'Async LCD needs 128 KiB heap reserve')
+        for name in ('dual_bank_passive_update_init','dual_bank_update_write',
+                     'dual_bank_update_burn_boot_info','fm1_nes_task'):
+            require(name not in symbols,'USB diagnostic unexpectedly exposes updater/component '+name)
+    elif not display_only:require(symbols['machine'][1]==69240,'Unexpected NES state layout')
+    else:
+        for name in ('machine','cartridge','fm1_nes_run','fm1_wl82_keyscan_start','iis_open',
+                     'fm1_alink_isr','iis_channel_on','fm1_wl82_run_with_stats'):
+            require(name not in symbols,'Display-only image contains forbidden component '+name)
+        for name in ('fm1_display_test_init','fm1_display_test_frame','fm1_display_stage'):
+            require(name in symbols,'Missing display diagnostic '+name)
+    require(value('_ram0_data_lma')==XIP+len(data(sections['.text'])),'Wrong startup RAM copy source')
+    require(value('_ram0_data_vma')==sections['.ram0_data'][3],'Wrong startup RAM destination')
+    require(value('_ram0_data_size')==sections['.ram0_data'][5],'Wrong startup RAM copy length')
+    require(value('_ram0_bss_vma')==sections['.ram0_bss'][3] and
+            value('_ram0_bss_size')==sections['.ram0_bss'][5],'Wrong startup BSS clearing range')
+    require(value('cache_ram_data_lma')==XIP+len(packed)-sections['.cache_ram_data'][5],'Wrong cache RAM copy source')
+    require(sections['.ram0_bss'][3]+sections['.ram0_bss'][5]<=value('HEAP_BEGIN')<value('HEAP_END')<RAM_LIMIT,'Bad heap boundary')
+    if not display_only and (not usb_only or usb_nes):
+        require('cartridge' in symbols,'Missing embedded cartridge')
+        addr,size,_=symbols['cartridge'];start=addr-XIP
+        require(size==rom_size and 0<=start and start+size<=sections['.text'][5],'Cartridge is not wholly in XIP')
+        require(hashlib.sha256(data(sections['.text'])[start:start+size]).hexdigest()==rom_sha,'Embedded cartridge hash mismatch')
+    power_report=audit_power(symbols,sections,code_at,required=require_board_power,usb_only=usb_only,usb_audio=usb_audio)
+    pre_os_report=audit_pre_os(symbols,code_at)
+    require(not require_screen_first or power_report.get('screen_first',False),'Missing screen-first board hook')
+    return {'static_audit':'passed','entry':hex(entry),'application_bytes':len(app),
+            'board_power':power_report,
+            'pre_os_display':pre_os_report,
+            'application_sha256':hashlib.sha256(app).hexdigest(),
+            'sections':{name:{'address':hex(s[3]),'bytes':s[5]} for name,s in sections.items() if name in allowed},
+            'heap_bytes':value('HEAP_END')-value('HEAP_BEGIN'),
+            'startup_instructions':{'bytes_verified':len(startup_code),'entry_branch_verified':True,
+                'sp':hex(value('_cpu0_ustack')),'ssp':hex(value('_cpu0_sstack')),
+                'ram_source':hex(value('_ram0_data_lma')),'ram_destination':hex(value('_ram0_data_vma')),
+                'ram_bytes':value('_ram0_data_size'),'bss_start':hex(value('_ram0_bss_vma')),
+                'bss_bytes':value('_ram0_bss_size'),'cache_copy_operands_verified':True,
+                'main':hex(value('main'))},
+            'early_boot_trace':{'enabled':traced,'address':hex(value('fm1_boot_trace')) if traced else None,
+                'live_debugger_required':True,'survives_reset':False},
+            'boot_compatibility':{'bridge':hex(bridge),'startup':hex(startup),
+                'sdk_initializer':hex(value('boot_info_init')),
+                'source_prefix_bytes':24,'normalized_bytes':92,
+                'unused_extensions_zeroed':True,'machine_code_verified':True},
+            'configuration_registry':{'address':hex(cfg_start),'bytes':28,
+                'initializer':'syscfg_file_init','write_callbacks':False,
+                'vm_btif_auto_repair_registered':False,
+                'integrity_init_slot':hex(value('__initcall_sdk_meky_check')),
+                'low_level_flash_write_code_still_linked':True},
+            'sdk_initcall_inventory':init_report,
+            'sdk_delayed_integrity':{'initializer':hex(integrity),
+                'timer_wrapper':hex(timeout),'callback':hex(value('_mkey_check')),
+                'scheduled_delay_ms':8000,'runtime_result_verified':False},
+            ('usb_task' if usb_only else 'nes_task'):{'entry':hex(value(worker)),'table':hex(task_table),
+                'priority':10,'stack_words':2048 if usb_only else 4096,'queue_words':0,
+                'app_core_priority':15,'physical_dispatch_verified':False},
+            'debug_mailboxes':{n:hex(value(n)) for n in runtime_states if n!='machine'},
+            'peripherals_required':require_peripherals,
+            'irq_wrapper_bytes':len(code) if require_peripherals else 0,
+            'integrated_symbols':{n:hex(value(n)) for n in peripheral_symbols} if require_peripherals else {},
+            'display_only':display_only,
+            'usb_only':usb_only,
+            'usb_bootloader_entry':usb_only and 'go_mask_usb_updata' in symbols,
+            'usb_peripheral_tests':usb_peripheral_tests,
+            'usb_nes':usb_nes,'usb_mod':usb_mod,
+            'cartridge':None if display_only or (usb_only and not usb_nes) else rom,'embedded_rom_sha256':None if display_only or (usb_only and not usb_nes) else rom_sha,'hardware_boot_verified':False,'flashable':False}
+
+
+if __name__=='__main__':
+    ap=argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('elf',type=Path);ap.add_argument('application',type=Path)
+    ap.add_argument('--peripherals',action='store_true')
+    ap.add_argument('--rom',choices=tuple(ROMS),default='rom50')
+    args=ap.parse_args()
+    print(json.dumps(audit(args.elf.read_bytes(),args.application.read_bytes(),args.peripherals,args.rom),indent=2))

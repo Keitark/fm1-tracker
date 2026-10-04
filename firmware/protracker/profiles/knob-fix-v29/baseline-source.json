@@ -1,0 +1,12 @@
+{
+  "baseline_application_sha256": "edf482ccd9caf0b1cb9ce68cbce92aff74a2534138219cb28ac13265e9636b67",
+  "baseline_source_sha256": {
+    "mod.c": "597cb5d3b9c7045fe5ca5b269ed27102515591f8d6b686a334b1564d21293d2b",
+    "mod.h": "870f7f8ca65cc85ddb3d55489db4972d2bb926773af3ecf27cf305b90fa394e4",
+    "usb.c": "3fd6e25e268b142effa4658ce184d07aa284c5435fcb3f2d49b8ba33c9dd7f99",
+    "usb.h": "128e7a0d6430188bb20e077742cd540a63a440e717c2cf5c7748ed7c5931ee5f",
+    "library.c": "52ad2aafcc7c2d5d882be29353d22e7affc763d4034563435ced2449210b32bb",
+    "library.h": "55b6c9afba78ae50ce189f4eb8df2c8dc73e03f4a526cb8e36f0928b3ed03157",
+    "target.c": "cbd886057160cc5af4cb856bb99906c68782431ea4f176b97cf80972cbc0236d"
+  }
+}

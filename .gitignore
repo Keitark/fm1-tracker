@@ -1,0 +1,43 @@
+# Local device captures, music libraries, and research dependencies.
+/private-backups/
+/private-library/
+/private-media/
+/references/
+/tmp/
+
+# External tool checkout; obtain it using the documented upstream URL.
+/tools/jl-uboot-tool/
+/firmware/mdx/vendor/
+
+# Generated firmware, host builds, and language caches.
+**/build/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local credentials and firmware/song/ROM binaries.
+.env
+.env.*
+*.key
+*.pem
+*.bin
+*.elf
+*.o
+*.obj
+*.exe
+*.dll
+*.a
+*.lib
+*.map
+*.pdb
+*.fwsc
+*.ppm
+*.mod
+*.MOD
+*.nes
+*.NES
+
+# Reproducible original instrument bank used by the tracker host tests.
+!/firmware/protracker/samples/FM1START.MOD

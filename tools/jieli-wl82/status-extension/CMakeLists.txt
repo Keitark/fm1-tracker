@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.20)
+project(fm1_wl82_status_model C)
+set(CMAKE_C_STANDARD 11)
+enable_testing()
+add_executable(status_model_tests tests.c status.c)
+target_compile_definitions(status_model_tests PRIVATE FM1_STATUS_TEST=1)
+add_test(NAME status_mmio_model COMMAND status_model_tests)
