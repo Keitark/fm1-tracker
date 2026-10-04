@@ -11,6 +11,8 @@ The source/manual comparison and control adaptation are recorded in
 [PROTRACKER315_WORKFLOW.md](PROTRACKER315_WORKFLOW.md).
 Current UX decisions and implementation handoff notes are in
 [HANDOFF.md](HANDOFF.md).
+Milestone #2 implementation order and acceptance gates are in
+[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 ## Current status
 
