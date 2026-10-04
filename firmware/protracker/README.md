@@ -9,6 +9,8 @@ This is an original small-screen implementation, not a port of the Amiga UI or
 its source code.
 The source/manual comparison and control adaptation are recorded in
 [PROTRACKER315_WORKFLOW.md](PROTRACKER315_WORKFLOW.md).
+Current UX decisions and implementation handoff notes are in
+[HANDOFF.md](HANDOFF.md).
 
 ## Current status
 
