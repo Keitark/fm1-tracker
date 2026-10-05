@@ -41,6 +41,11 @@ void fm1_display_test_stop(void);
 #include <stddef.h>
 /* Synchronous stream through the already initialized stock-sequence driver. */
 int fm1_display_write(int data,const uint8_t *,size_t);
+#if defined(FM1_NES_PLAYER) && defined(FM1_LCD_STOCK_DMA)
+/* One synchronous producer may populate the owned DMA strip before write.
+ * The pointer remains owned by this driver and is valid until shutdown. */
+uint8_t *fm1_display_strip_buffer(size_t *length);
+#endif
 #ifdef FM1_LCD_ASYNC
 typedef struct {
     uint32_t submitted,completed,busy_skips,irqs,bytes,errors;

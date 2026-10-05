@@ -283,6 +283,64 @@ class PolicyTests(unittest.TestCase):
                 worker.serial_action('enter_uboot',root)
                 self.assertEqual(sent,[b'HELLO\n',b'MDX STOP\n',b'MDX STATUS\n',b'UBOOT\n',b'UBOOT\n',b'UBOOT CONFIRM\n'])
 
+    def test_doom_serial_observation_and_stop_before_uboot(self):
+        sent=[]
+        class Port:
+            def __init__(self,**kwargs):pass
+            def __enter__(self):return self
+            def __exit__(self,*args):pass
+            def open(self):pass
+            def write(self,data):sent.append(data)
+            def flush(self):pass
+        hello='FM1DIAG/1 DOOM-FM1/1 UBOOT=SERIAL COMMIT=BLOCKED\n'
+        def status(frame=1,stage=4,fault=0,lcd=0,keys=0,stopped=0):
+            return (f'DOOM STATUS stage={stage} fault={fault} frames={frame} stopped={stopped} '
+                    f'lcd_stage=4 lcd_error={lcd} key_error={keys} sys_hz=240000000 '
+                    'lsb_hz=60000000 error=\n')
+        with tempfile.TemporaryDirectory() as folder,patch.dict(sys.modules,{'serial':SimpleNamespace(Serial=Port)}),patch.object(worker,'serial_port',return_value='COM_FAKE'),patch.object(worker.time,'sleep'):
+            root=Path(folder)
+            with patch.object(worker,'capture',side_effect=['',hello,status(0,stage=3)]+[status(n,keys=-3) for n in range(1,4)]):
+                result=worker.serial_action('observe',root)
+                self.assertEqual(result['profile'],'DOOM-FM1/1')
+                self.assertEqual((result['frames_first'],result['frames_last']),(1,3))
+                self.assertEqual(result['key_error_last'],-3)
+                self.assertTrue(result['key_error_reported'])
+                self.assertFalse(result['physical_display_keys_verified'])
+                self.assertEqual(sent,[b'HELLO\n']+[b'DOOM STATUS\n']*4)
+            for responses,message in (([status()]*4,'progress'),
+                                      ([status(n,stage=3) for n in range(4)],'not running'),
+                                      ([status(n,fault=-30) for n in range(4)],'error'),
+                                      ([status(n,lcd=-20) for n in range(4)],'error'),
+                                      ([status(n,stopped=1) for n in range(4)],'not running'),
+                                      (['DOOM STATUS stage=4 frames=1\n']*4,'Incomplete')):
+                with self.subTest(message=message),patch.object(worker,'capture',side_effect=['',hello]+responses):
+                    with self.assertRaisesRegex(ValueError,message):worker.serial_action('observe',root)
+            sent.clear()
+            with patch.object(worker,'capture',side_effect=['',hello,'OK DOOM STOP REQUESTED\n',
+                              status(40),status(40,stage=255,fault=-30,stopped=1),
+                              'OK UBOOT ARMED CONFIRM-WITHIN-5000MS\n']),patch.object(worker,'disk',return_value={'DeviceID':'fake'}):
+                worker.serial_action('enter_uboot',root)
+                self.assertEqual(sent,[b'HELLO\n',b'DOOM STOP\n',b'DOOM STATUS\n',b'DOOM STATUS\n',b'UBOOT\n',b'UBOOT CONFIRM\n'])
+            sent.clear()
+            with patch.object(worker,'capture',side_effect=['',hello,'OK DOOM STOP REQUESTED\n']+[status()]*6):
+                with self.assertRaisesRegex(ValueError,'not confirmed stopped'):worker.serial_action('enter_uboot',root)
+                self.assertNotIn(b'UBOOT\n',sent)
+            with patch.object(worker,'capture',side_effect=['']+['FM1DIAG/1 DOOM-FM1/1 UBOOT=SERIAL COMMIT=ALLOWED\n']*3):
+                with self.assertRaisesRegex(ValueError,'HELLO not confirmed'):worker.serial_action('observe',root)
+            with patch.object(worker,'capture',side_effect=['']+[status().replace('error=\n','error='+hello)]*3):
+                with self.assertRaisesRegex(ValueError,'HELLO not confirmed'):worker.serial_action('observe',root)
+
+    def test_doom_status_does_not_parse_diagnostic_message_as_fields(self):
+        line=('DOOM STATUS stage=4 fault=0 frames=10 stopped=0 lcd_stage=4 lcd_error=0 '
+              'key_error=0 sys_hz=240000000 lsb_hz=60000000 error=panic stage=255 fault=-30 stopped=1\n')
+        values=worker.doom_status_values(line)
+        self.assertEqual((values[0]['stage'],values[0]['fault'],values[0]['stopped']),(4,0,0))
+        self.assertEqual(worker.doom_status_values(line.rstrip('\n')),[])
+        with self.assertRaisesRegex(ValueError,'Incomplete'):
+            worker.doom_status_values(line.replace(' error=',' stage=255 error='))
+        with self.assertRaisesRegex(ValueError,'Incomplete'):
+            worker.doom_status_values(line.replace('stopped=0 lcd_stage=','stopped=1.5 lcd_stage='))
+
     def test_loader_reset_cli_grammar_before_device_open(self):
         tree=ast.parse(worker.CLI.read_text())
         # Only argparse definitions and preflight policy; no imports/USB access.
@@ -300,6 +358,49 @@ class PolicyTests(unittest.TestCase):
                 if allowed:exec(code,{'argparse':argparse,'anyint':lambda x:int(x,0)})
                 else:
                     with self.assertRaises(SystemExit):exec(code,{'argparse':argparse,'anyint':lambda x:int(x,0)})
+
+
+class CliLogTests(unittest.TestCase):
+    def run_cli(self, output, log, mode='reset', returncode=0):
+        # Run a real, harmless child process so redirected output is written as
+        # bytes, just as it is by the CLI; never import its USB implementation.
+        actual_run = subprocess.run
+        script = f'import os, sys; os.write(1, {output!r}); sys.exit({returncode})'
+        def child(args, **kwargs):
+            self.assertEqual(kwargs['check'], True)
+            return actual_run([sys.executable, '-I', '-S', '-c', script], **kwargs)
+        with patch.object(worker, 'python_flags', return_value=['-I', '-S', '-u']), \
+             patch.object(worker.subprocess, 'run', side_effect=child):
+            worker.execute_cli('fake-device', ['reset 1'], log, mode)
+
+    def test_reset_accepts_non_utf8_output_and_preserves_raw_log(self):
+        output = b'Resetting device\r\n\x83\x65\x83\x58\x83\x67\r\n'
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / 'reset.log'
+            self.run_cli(output, log)
+            self.assertEqual(log.read_bytes(), output)
+
+    def test_reset_failed_exit_is_rejected_with_raw_log_preserved(self):
+        output = b'Resetting device\r\n\x83\x65\x83\x58\x83\x67\r\n'
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / 'reset.log'
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                self.run_cli(output, log, returncode=7)
+            self.assertEqual(caught.exception.returncode, 7)
+            self.assertEqual(log.read_bytes(), output)
+
+    def test_reset_error_markers_are_rejected_with_non_utf8_output(self):
+        for marker in (b'Key mismatch', b'ERROR'):
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as folder:
+                log = Path(folder) / 'reset.log'
+                with self.assertRaisesRegex(ValueError, 'CLI reported an error'):
+                    self.run_cli(b'\x83\x65 ' + marker + b'\r\n', log)
+
+    def test_nonreset_decoding_remains_strict(self):
+        for mode in ('write', 'load'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as folder:
+                with self.assertRaises(UnicodeDecodeError):
+                    self.run_cli(b'\x83\x65\r\n', Path(folder) / 'cli.log', mode)
 
 
 class RetryTests(unittest.TestCase):

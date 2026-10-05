@@ -1,5 +1,32 @@
 # FM-1 once-elevated flashing session
 
+## Doom support, 2026-10-05
+
+The current broker recognizes the Doom CDC identity
+`FM1DIAG/1 DOOM-FM1/1 UBOOT=SERIAL COMMIT=BLOCKED`.
+`observe` polls `DOOM STATUS` and requires stage 4, no engine/LCD fault and
+advancing frame counters. Key-scanner errors are reported separately;
+physical LCD and key operation still need observation.
+`enter_uboot` sends `DOOM STOP`, waits for completed peripheral shutdown, then
+uses the existing guarded `UBOOT`/confirmation handshake.
+
+The app input adapter lives in the sibling `fm1-doom` repository. It prepares
+the existing writer request from a validated plain `app.bin` and a protected
+session's verified current readback. The writer schema, preserved partitions
+and changed-sector policy are unchanged.
+
+Reset logs preserve original bytes and decode with replacement only for display
+and error checks. Write/load logs remain strict UTF-8. Error markers and failed
+exit codes still reject the operation, and reset remains a single attempt.
+
+Verification: display tests 2/2; focused Doom/serial/reset contracts 9/9. The
+complete broker suite is 30/31: its existing current-MOD regeneration test
+rejects a stale `usb-diag/app_main.c` hash in a saved build manifest.
+This is a local artifact freshness failure, not a failed Doom protocol test.
+
+Refs [board issue #4](https://github.com/Keitark/fm1-tracker/issues/4) and
+[Doom issue #1](https://github.com/Keitark/fm1-doom/issues/1).
+
 Status (2026-09-29): the explicit retry extension has now completed a physical
 same-image retry with52 sector checks, one full readback, reset and successful
 serial observation. No device operation was issued while implementing it;

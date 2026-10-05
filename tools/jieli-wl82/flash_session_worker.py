@@ -168,7 +168,9 @@ def execute_cli(device, commands, log, mode='write'):
     with log.open('x', encoding='utf-8') as stream:
         subprocess.run(args, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT,
                        check=True, timeout=60)
-    text = log.read_text(encoding='utf-8')
+    # The child writes raw bytes to the logfile descriptor. Reset output may use
+    # a Windows code page; preserve those bytes and tolerate decoding only here.
+    text = log.read_text(encoding='utf-8', errors='replace' if mode == 'reset' else 'strict')
     require('Key mismatch' not in text and 'ERROR' not in text, 'CLI reported an error')
     if mode == 'load':
         require('The Loader has been successfully installed.' in text and '0x856014' in text,
@@ -214,6 +216,35 @@ def mod_status_progress(transcript):
     return counters[0], counters[-1]
 
 
+def doom_status_values(transcript):
+    required = {'stage','fault','frames','stopped','lcd_stage','lcd_error',
+                'key_error','sys_hz','lsb_hz'}
+    counters = []
+    for line in transcript.splitlines(keepends=True):
+        if not line.startswith('DOOM STATUS ') or not line.endswith('\n'):
+            continue
+        # The diagnostic message is trailing free text, not status fields.
+        prefix = line.split(' error=', 1)[0]
+        fields = re.findall(r'(?<!\S)([a-z_]+)=(-?\d+)(?!\S)', prefix)
+        require(len(fields) == len(required) and {key for key,value in fields} == required,
+                'Incomplete Doom status')
+        counters.append({key:int(value) for key,value in fields})
+    return counters
+
+
+def doom_status_progress(transcript):
+    counters = doom_status_values(transcript)
+    require(counters and not any(values[key] for values in counters
+                                for key in ('fault','lcd_error')),
+            'Doom firmware/LCD error reported or status missing')
+    require(counters[-1]['stage'] == 4 and counters[-1]['stopped'] == 0,
+            'Doom renderer not running')
+    active = [values for values in counters if values['stage'] == 4 and not values['stopped']]
+    require(len(active) >= 2 and active[-1]['frames'] > active[0]['frames'],
+            'Doom frame progress not confirmed')
+    return active[0], active[-1], any(values['key_error'] for values in counters)
+
+
 def serial_action(op, run):
     import serial
     # Enumeration may lag a successful reset. No flash/reset retries here.
@@ -238,13 +269,31 @@ def serial_action(op, run):
                 port.write(b'HELLO\n'); port.flush()
                 reply = capture(port, 1)
                 transcript += reply
+                doom_profile = 'FM1DIAG/1 DOOM-FM1/1 UBOOT=SERIAL COMMIT=BLOCKED' in reply.splitlines()
                 if 'FM1DIAG/1' in reply and (re.search(r'\bNES=(?:SMB1|INES)\b',reply) or
                                            'MDX-KARAOKE/1 RAM-UPLOAD UBOOT=SERIAL COMMIT=BLOCKED' in reply or
-                                           'MOD-EDITOR/1 RAM-TRANSFER UBOOT=SERIAL COMMIT=BLOCKED' in reply):
+                                           'MOD-EDITOR/1 RAM-TRANSFER UBOOT=SERIAL COMMIT=BLOCKED' in reply or
+                                           doom_profile):
                     break
             else:
                 raise ValueError('FM-1 serial HELLO not confirmed')
             if op == 'observe':
+                if doom_profile:
+                    observation = ''
+                    for _ in range(4):
+                        port.write(b'DOOM STATUS\n'); port.flush()
+                        status = capture(port, 1)
+                        observation += status; transcript += status
+                    first,last,key_error = doom_status_progress(observation)
+                    return {'serial_hello_verified': True, 'profile': 'DOOM-FM1/1', 'port': name,
+                            'frames_first': first['frames'], 'frames_last': last['frames'],
+                            'stage': last['stage'], 'fault': last['fault'],
+                            'lcd_stage': last['lcd_stage'], 'lcd_error': last['lcd_error'],
+                            'key_error_first': first['key_error'], 'key_error_last': last['key_error'],
+                            'key_error_reported': key_error,
+                            'sys_hz': last['sys_hz'], 'lsb_hz': last['lsb_hz'],
+                            'physical_display_keys_verified': False,
+                            'note': 'Serial renderer/LCD counters only; inspect physical screen and keys.'}
                 if 'MOD-EDITOR/1 RAM-TRANSFER' in reply:
                     for _ in range(4):
                         port.write(b'MOD STATUS\n'); port.flush()
@@ -291,7 +340,18 @@ def serial_action(op, run):
                         'frames_first': frames[0], 'frames_last': frames[-1],
                         'physical_display_audio_verified': False,
                         'note': 'Serial capture only; inspect counters and physical screen/audio.'}
-            if 'MOD-EDITOR/1 RAM-TRANSFER' in reply:
+            if doom_profile:
+                port.write(b'DOOM STOP\n'); port.flush()
+                status = capture(port, 2); transcript += status
+                for _ in range(6):
+                    port.write(b'DOOM STATUS\n'); port.flush()
+                    reply = capture(port, .7); status += reply; transcript += reply
+                    counters = doom_status_values(status)
+                    if counters and counters[-1]['stopped'] == 1:
+                        break
+                else:
+                    raise ValueError('Doom renderer not confirmed stopped')
+            elif 'MOD-EDITOR/1 RAM-TRANSFER' in reply:
                 port.write(b'MOD STOP\n'); port.flush()
                 transcript += capture(port, 2)
                 port.write(b'MOD STATUS\n'); port.flush()
@@ -426,7 +486,7 @@ class Session:
                     self.state['needs_observation'] = False
             self.state['blocked'] = was_blocked if op == 'observe' else False
             # A reset transport disconnect can be resolved by verified CDC and
-            # advancing NES telemetry, but a failed flash can NEVER be cleared this way.
+            # advancing firmware telemetry, but a failed flash can NEVER be cleared this way.
             if op == 'observe' and previous_operation == 'reset' and not self.state.get('reset_pending'):
                 self.state['blocked'] = False
                 self.state['reset_resolved_by_observation'] = True

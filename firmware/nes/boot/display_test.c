@@ -177,7 +177,7 @@ static int send(int data,const uint8_t *p,size_t size) {
         if(size>capacity){buffer=fm1_lcd_dma_pixels;capacity=sizeof(fm1_lcd_dma_pixels);}
 #endif
         if(!p || !size || size>capacity)return fail(-5);
-        for(i=0;i<size;i++)buffer[i]=p[i];
+        if (buffer != p) for(i=0;i<size;i++)buffer[i]=p[i];
 #ifdef FM1_DISPLAY_TEST_HOST
         fm1_display_test_dma_source(buffer);
 #else
@@ -219,6 +219,12 @@ static int command(uint8_t c,const uint8_t *p,size_t n) {
     return n?send(1,p,n):0;
 }
 #if defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || defined(FM1_MOD_PLAYER)
+#if defined(FM1_NES_PLAYER) && defined(FM1_LCD_STOCK_DMA)
+uint8_t *fm1_display_strip_buffer(size_t *length) {
+    if (length) *length=sizeof(fm1_lcd_dma_pixels);
+    return fm1_lcd_dma_pixels;
+}
+#endif
 int fm1_display_write(int data,const uint8_t *p,size_t n) {
     size_t count;
 #ifdef FM1_LCD_ASYNC
