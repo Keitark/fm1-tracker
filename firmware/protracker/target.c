@@ -17,6 +17,9 @@
 #include "usb.h"
 #include "library.h"
 #include "view.h"
+#include "controls.h"
+#include "bank.h"
+#include "audio_queue.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -30,15 +33,24 @@ static fm1_mod_player player;
 static uint8_t mix_stereo; /* power-on default includes all voices on speaker */
 static fm1_mod_editor editor;
 static fm1_mod_library library;
-static uint8_t page; /* 0 pattern, 1 PC files, 2 samples in loaded song */
+static fm1_tracker_controls gestures;
+static fm1_tracker_view_context view_context;
+static fm1_bank active_bank;
+static uint32_t notice_until;
+#ifdef FM1_MOD_EMBEDDED_BANK
+extern const uint8_t fm1_mod_active_bank[];
+extern const uint32_t fm1_mod_active_bank_size;
+#endif
+static uint8_t page; /* 0 pattern (with compact bank/arranger), 1 PC files, 2 song samples */
 static fm1_wl82_keyscan scanner;
 static fm1_volume mod_volume;
 static fm1_encoders encoders;
 static fm1_audio_startup envelope;
 static spinlock_t control_lock,audio_lock,input_lock;
 static struct {unsigned request,running,available,executing,shutdown,quiescent,frames,underruns,ui_frames,ui_strips,save_hint;} control;
-static int16_t ring[2048][2],block[FM1_MOD_BLOCK*2];
-static uint32_t rd,wr,frames,underruns;
+#define PCM_RING_FRAMES FM1_PCM_RING_FRAMES
+static int16_t ring[PCM_RING_FRAMES][2],block[FM1_MOD_BLOCK*2];
+static uint32_t rd,wr,rd_slot,wr_slot,frames,underruns;
 static unsigned primed,audio_enabled,scan_enabled,scan_ticks,input_irq_registered,scan_retries;
 static uint32_t scan_retry_at,encoder_sequence;
 #ifdef FM1_LCD_ASYNC
@@ -49,6 +61,8 @@ static uint32_t scan_retry_at,encoder_sequence;
 static uint8_t row_pixels[UI_STRIP_ROWS*480u];
 static volatile int lcd_error,key_error,audio_error;
 static int scan_timer;
+static void flush_audio(void);
+static void notice(const char *text);
 
 static unsigned take(spinlock_t *l){unsigned f;local_irq_save(f);arch_spin_lock(l);return f;}
 static void release(spinlock_t *l,unsigned f){arch_spin_unlock(l);local_irq_restore(f);}
@@ -101,7 +115,11 @@ int fm1_mod_usb_command(const char *s,uint32_t now,fm1_mod_reply reply,void *ctx
     }
     rc=fm1_mod_library_line(&library,s,reply,ctx);
     if(!rc)rc=fm1_mod_usb_line(&song,&transfer,&io,s,now,reply,ctx);
-    if(!was_loaded && song.loaded){fm1_mod_editor_init(&editor,&song);editor.octave=-1;editor.edit=0;control.save_hint=0;page=0;}
+    if(was_loaded && !song.loaded && transfer.active){fm1_mod_preview_stop(&player);flush_audio();}
+    if(!was_loaded && song.loaded){
+        fm1_mod_editor_init(&editor,&song);editor.octave=-1;editor.edit=0;control.save_hint=0;page=0;
+        memset(&view_context,0,sizeof(view_context));fm1_tracker_controls_init(&gestures);notice("MOD LOADED");
+    }
     release(&control_lock,f);return rc;
 }
 void fm1_mod_usb_reset(void){unsigned f=take(&control_lock);fm1_mod_usb_abort(&transfer);release(&control_lock,f);}
@@ -122,7 +140,8 @@ static void audio_output(void *ctx,u8 *data,int len,u8 ch){
      * than that reservoir and must be audible as soon as it is rendered. */
     if(!primed && available>=(control.running?1470u:1u))primed=1;
     for(i=0;i<64;i++){
-        if(primed && rd!=wr){out[2*i]=(int32_t)ring[rd&2047][0]*256;out[2*i+1]=(int32_t)ring[rd&2047][1]*256;rd++;}
+        if(primed && rd!=wr){out[2*i]=(int32_t)ring[rd_slot][0]*256;out[2*i+1]=(int32_t)ring[rd_slot][1]*256;
+            rd++;rd_slot=fm1_pcm_next_slot(rd_slot);}
         else {out[2*i]=out[2*i+1]=0;
             if(primed && (control.running || player.preview_active))underruns++;}
     }
@@ -143,9 +162,9 @@ static void fm1_mod_scan_tick(void *u){unsigned f=take(&input_lock);(void)u;
     release(&input_lock,f);}
 static void publish(void){unsigned f,fr,ur;f=take(&audio_lock);fr=frames;ur=underruns;release(&audio_lock,f);
     f=take(&control_lock);control.frames=fr;control.underruns=ur;release(&control_lock,f);}
-static void flush_audio(void){unsigned f=take(&audio_lock);rd=wr=0;primed=0;release(&audio_lock,f);}
+static void flush_audio(void){unsigned f=take(&audio_lock);rd=wr=rd_slot=wr_slot=0;primed=0;release(&audio_lock,f);}
 static void stop(void){unsigned f;flush_audio();
-    if(player.playing){editor.order=player.current_order;editor.row=player.current_row;}
+    if(player.playing)fm1_mod_editor_sync_player(&editor,&player);
     fm1_mod_player_stop(&player);editor.edit=0;
     f=take(&control_lock);control.running=0;release(&control_lock,f);}
 static void shutdown(void){unsigned f;stop();if(scan_timer>0)sys_usec_timer_del(scan_timer);
@@ -159,13 +178,15 @@ static void shutdown(void){unsigned f;stop();if(scan_timer>0)sys_usec_timer_del(
 }
 static void action(unsigned op){
     if(op==FM1_MOD_REQUEST_STOP){stop();return;}
-    if(op==FM1_MOD_REQUEST_NEW){stop();fm1_mod_new(&song);song.dirty=1;fm1_mod_editor_init(&editor,&song);editor.octave=-1;editor.edit=0;return;}
+    if(op==FM1_MOD_REQUEST_NEW){stop();fm1_mod_new(&song);song.dirty=1;fm1_mod_editor_init(&editor,&song);editor.octave=-1;editor.edit=0;
+        page=0;memset(&view_context,0,sizeof(view_context));notice("NEW EMPTY SONG");return;}
     if((op==FM1_MOD_REQUEST_PLAY || op==FM1_MOD_REQUEST_PATTERN) && song.loaded){
         unsigned f;int rc;flush_audio();
         rc=op==FM1_MOD_REQUEST_PATTERN?
             fm1_mod_player_start_pattern_at(&player,&song,editor.order,0):
             fm1_mod_player_start_at(&player,&song,editor.order,0);
         if(rc)return;
+        page=0;view_context.arranger=view_context.bank_open=0;
         player.stereo=mix_stereo;editor.edit=0;
         f=take(&control_lock);control.running=1;release(&control_lock,f);
     }
@@ -182,6 +203,11 @@ static void ui_text(void){
     if(!busy)
     fm1_tracker_view_update(&view,&song,&player,&editor,&library,page,
         control.running,mix_stereo,control.save_hint);
+    view_context.quick_modifier=(uint8_t)fm1_tracker_controls_held(&gestures,6);
+    view_context.block_modifier=(uint8_t)fm1_tracker_controls_held(&gestures,11);
+    view_context.new_hold=(uint8_t)(gestures.new_pending && !gestures.new_fired);
+    if(view_context.notice[0] && (int32_t)(timer_get_ms()-notice_until)>=0)view_context.notice[0]=0;
+    if(!busy)fm1_tracker_view_context_apply(&view,&song,&editor,&view_context);
     f=take(&control_lock);busy|=transfer.active || loaded!=song.loaded;
     release(&control_lock,f);
     if(busy){memset(&view,0,sizeof(view));strcpy(view.ui[0],"LOADING FROM USB PC");}
@@ -219,99 +245,163 @@ static int ui_strip(unsigned y){
     return 0;
 }
 #endif
+static void notice(const char *text){
+    snprintf(view_context.notice,sizeof(view_context.notice),"%.39s",text);
+    notice_until=timer_get_ms()+1200u;
+}
+static void sample_notice(const char *prefix,unsigned quick){
+    char text[40];unsigned h=20u+(editor.sample-1u)*30u;
+    if(quick<8)snprintf(text,sizeof(text),"Q%u %s S%02X %.16s",quick+1,prefix,
+        editor.sample,(const char *)song.bytes+h);
+    else snprintf(text,sizeof(text),"S%02X %.19s",editor.sample,(const char *)song.bytes+h);
+    notice(text);
+}
+static int bank_audition(unsigned midi){
+    fm1_bank_entry entry;
+    if(fm1_bank_entry_get(&active_bank,view_context.bank_index,&entry))return -1;
+    snprintf(view_context.bank_name,sizeof(view_context.bank_name),"%.19s",entry.name);
+    if(!control.running)flush_audio();
+    return fm1_mod_preview_pcm(&player,entry.pcm,entry.length,entry.volume,
+        (unsigned)entry.finetune&15u,entry.loop_start,entry.loop_length,midi,editor.channel);
+}
+static int editable(void){return song.loaded && !control.running && !transfer.active && !transfer.exporting;}
 static void input_key(unsigned slot){
-    unsigned f=take(&control_lock);
+    unsigned f=take(&control_lock);int rc=0;
+    if(transfer.active || transfer.exporting){release(&control_lock,f);return;}
     if(slot==6){
-        page=0;editor.edit=0;fm1_mod_preview_stop(&player);
-        if(!control.running)flush_audio();
-        release(&control_lock,f);return;
+        release(&control_lock,f);stop();page=0;view_context.arranger=view_context.bank_open=0;
+        notice("EDIT / AUDITION");return;
     }
     if(page==1){
-        if(slot==8)page=0;
+        if(slot==8 || slot==9)page=0;
         else if(slot==12)fm1_mod_library_pick(&library);
-        else if(slot==4 && song.loaded)page=2;
         release(&control_lock,f);return;
     }
     if(page==2){
         if(slot==8 || slot==4 || slot==12)page=0;
         release(&control_lock,f);return;
     }
-    if(slot!=9)control.save_hint=0;
-    if(slot==12){if(!control.request && !transfer.exporting && !transfer.active)
-        request(0,control.running || player.preview_active?FM1_MOD_REQUEST_STOP:FM1_MOD_REQUEST_PLAY);}
-    else if(slot==7){if(!control.request && !transfer.exporting && !transfer.active)
-        request(0,control.running || player.preview_active?FM1_MOD_REQUEST_STOP:FM1_MOD_REQUEST_PATTERN);}
-    else if(slot==2 && editor.edit)editor.sample_mode=0; /* FX: cell parameters */
-    else if((slot==3 || slot==5) && editor.edit && song.loaded &&
-            !transfer.exporting && !transfer.active){
-        if(control.running){editor.order=player.current_order;editor.row=player.current_row;}
-        if(slot==3)fm1_mod_editor_clear_note(&editor); /* SCL: leave effects */
-        else fm1_mod_editor_clear_effect(&editor);  /* LFO: leave note */
-    }
-    else if(slot==4){if(editor.edit)editor.sample_mode=1;else if(song.loaded)page=2;}
-    else if(slot==0 && editor.octave>-2)editor.octave--;
-    else if(slot==1 && editor.octave<1)editor.octave++;
-    else if(slot==8){if(editor.edit){editor.order=0;editor.row=0;}else page=1;}
-    else if(slot==9)control.save_hint=1;
-    else if((slot==10 || slot==11) && song.loaded && !control.running &&
-            !transfer.exporting && !transfer.active && song.orders<128){
-        unsigned old=song.bytes[952+editor.order],new_pattern;
-        int added=fm1_mod_add_pattern(&song);
-        if(added>=0){new_pattern=(unsigned)added;
-            if(slot==11)memcpy(song.bytes+1084u+new_pattern*1024u,song.bytes+1084u+old*1024u,1024u);
-            fm1_mod_set_order(&song,song.orders,new_pattern);editor.order=(uint8_t)(song.orders-1);editor.row=0;}
-    }
-    else if(slot==13 && !transfer.exporting && !transfer.active){
-        if(!editor.edit && control.running){editor.order=player.current_order;editor.row=player.current_row;}
-        editor.edit^=1;
-    }
-    else if(slot>=14 && slot<41 && !transfer.exporting && !transfer.active){
+    if(slot==12 || slot==7){
+        page=0;view_context.arranger=view_context.bank_open=0;
+        if(!control.request)request(0,control.running?FM1_MOD_REQUEST_STOP:
+            slot==7?FM1_MOD_REQUEST_PATTERN:FM1_MOD_REQUEST_PLAY);
+    }else if(slot==13){
+        if(control.running)notice("STOP FIRST TO WRITE");
+        else {editor.edit^=1;notice(editor.edit?"WRITE NOTE ENTRY":"EDIT / AUDITION");}
+    }else if(slot==9){page=1;view_context.arranger=view_context.bank_open=0;}
+    else if(slot==8){
+        if(control.running)notice("STOP FIRST FOR ORDER EDIT");
+        else {view_context.bank_open=0;view_context.arranger^=1;notice("HOME ORDER / PATTERN");}
+    }else if(slot==0 || slot==1){
+        if(slot==0 && editor.octave>-2)editor.octave--;
+        if(slot==1 && editor.octave<1)editor.octave++;
+    }else if(view_context.bank_open){
+        if(slot==4){view_context.bank_open=0;fm1_mod_preview_stop(&player);if(!control.running)flush_audio();}
+        else if(slot==2){
+            if(!editable())notice("STOP FIRST TO COPY BANK");
+            else {
+                /* Copy/memmove up to 256 KiB with IRQs enabled. The USB idle
+                 * gate excludes replacement of the RAM song during this edit. */
+                control.executing=1;fm1_mod_preview_stop(&player);flush_audio();release(&control_lock,f);
+                rc=fm1_bank_import(&active_bank,view_context.bank_index,&song,editor.sample);
+                f=take(&control_lock);control.executing=0;
+                if(rc)notice("BANK COPY FULL / ERROR");
+                else {view_context.bank_open=0;sample_notice("COPIED",8);}
+            }
+        }
+    }else if(view_context.arranger){
+        if(!editable())notice("STOP FIRST FOR ORDER EDIT");
+        else {
+            unsigned pattern=(unsigned)fm1_mod_get_order(&song,editor.order);
+            if(slot==2){rc=fm1_mod_append_order(&song,pattern);if(!rc)editor.order=(uint8_t)(song.orders-1);}
+            else if(slot==4)rc=fm1_mod_insert_order(&song,editor.order,pattern);
+            else if(slot==3){rc=fm1_mod_delete_order(&song,editor.order);if(editor.order>=song.orders)editor.order=(uint8_t)(song.orders-1);}
+            else if(slot==5){rc=fm1_mod_duplicate_order(&song,editor.order);if(!rc)editor.order++;}
+            else if(slot==10 || slot==11){
+                int added;control.executing=1;fm1_mod_preview_stop(&player);flush_audio();release(&control_lock,f);
+                added=slot==10?fm1_mod_add_pattern(&song):fm1_mod_duplicate_pattern(&song,pattern);
+                rc=added<0?-1:fm1_mod_set_order(&song,editor.order,(unsigned)added);
+                f=take(&control_lock);control.executing=0;
+            }
+            if(slot==2 || slot==3 || slot==4 || slot==5 || slot==10 || slot==11){
+                if(!rc)fm1_mod_editor_block_clear(&editor);
+                notice(rc?"ORDER/PATTERN FULL / ERROR":slot==10?"NEW BLANK PATTERN":slot==11?"DUPLICATED PATTERN":"ORDER UPDATED");
+            }
+        }
+    }else if((slot==3 || slot==5) && fm1_tracker_controls_held(&gestures,11)){
+        fm1_tracker_controls_use_seq(&gestures);
+        if(!editable())notice("STOP FIRST FOR BLOCK EDIT");
+        else {rc=slot==3?fm1_mod_editor_block_copy(&editor):fm1_mod_editor_block_paste(&editor);
+            notice(rc?"NO BLOCK / CLIPBOARD":slot==3?"BLOCK COPIED":"BLOCK PASTED");}
+    }else if(slot==3 || slot==5){
+        if(!editable())notice("STOP FIRST TO DELETE");
+        else {if(slot==3)fm1_mod_editor_clear_field(&editor);else fm1_mod_editor_clear_all(&editor);
+            notice(slot==3?"FIELD CLEARED":"CELL CLEARED");}
+    }else if(slot==4){
+        if(!active_bank.count)notice("ACTIVE BANK UNAVAILABLE");
+        else {view_context.bank_open=1;view_context.bank_count=active_bank.count;bank_audition(48);}
+    }else if(slot==2){fm1_mod_editor_field_move(&editor,1);}
+    else if(slot==11){fm1_mod_editor_block_clear(&editor);notice("BLOCK CLEARED");}
+    if(slot>=14 && slot<41 && song.loaded){
         int midi=53+(int)slot-14+(int)editor.octave*12;
-        if(midi>=36 && midi<=71 && song.loaded){
-            if(!control.running)flush_audio();
-            fm1_mod_preview_start(&player,&song,editor.sample,(unsigned)midi,editor.channel);
-            if(editor.edit){
-                if(control.running){editor.order=player.current_order;editor.row=player.current_row;}
-                fm1_mod_editor_note(&editor,(unsigned)midi);
-                if(control.running)editor.row=player.current_row;
+        if(midi>=36 && midi<=71){
+            if(view_context.bank_open)bank_audition((unsigned)midi);
+            else {
+                if(!control.running)flush_audio();
+                fm1_mod_preview_start(&player,&song,editor.sample,(unsigned)midi,editor.channel);
+                if(editor.edit && !control.running)fm1_mod_editor_note(&editor,(unsigned)midi);
             }
         }
     }
     release(&control_lock,f);
 }
-static void select_sample(int step){
-    int n=(int)editor.sample+step;
-    if(n<1)n=1;if(n>31)n=31;
-    editor.sample=(uint8_t)n;
+static void control_event(fm1_tracker_control_event event){
+    unsigned f;
+    if(event.kind==FM1_CONTROL_KEY){input_key(event.index);return;}
+    if(!event.kind)return;
+    f=take(&control_lock);
+    if(transfer.active || transfer.exporting || !song.loaded){release(&control_lock,f);return;}
+    if(event.kind==FM1_CONTROL_NEW_SONG){
+        if(control.running)notice("STOP FIRST FOR NEW SONG");
+        else if(!control.request){request(0,FM1_MOD_REQUEST_NEW);notice("NEW EMPTY SONG");}
+    }else if(event.kind==FM1_CONTROL_QUICK_BIND){
+        /* Bind captured PRESETS selection, even when it changed during hold. */
+        unsigned current=editor.sample;char text[40];unsigned h=20u+(event.sample-1u)*30u;
+        editor.sample=event.sample;fm1_mod_editor_quick_bind(&editor,event.index);editor.sample=(uint8_t)current;
+        snprintf(text,sizeof(text),"Q%u BOUND S%02X %.16s",event.index+1,event.sample,(const char *)song.bytes+h);notice(text);
+    }else if(event.kind==FM1_CONTROL_QUICK_SELECT){
+        fm1_mod_editor_quick_select(&editor,event.index);view_context.bank_open=view_context.arranger=0;
+        sample_notice("SELECT",event.index);
+    }
+    release(&control_lock,f);
 }
 static void input_encoder(unsigned id,int step){
-    unsigned f=take(&control_lock);fm1_mod_cell cell;unsigned pattern;
+    unsigned f=take(&control_lock);int rc=0;
     control.save_hint=0;
+    if(transfer.active || transfer.exporting || !song.loaded){release(&control_lock,f);return;}
+    if(fm1_tracker_controls_held(&gestures,9) && id==4){
+        fm1_tracker_controls_use_save(&gestures);mix_stereo=(uint8_t)(step>0);player.stereo=mix_stereo;
+        notice(mix_stereo?"STEREO AUDIO OUT":"MONO ALL TRACKS SPEAKER");
+        release(&control_lock,f);return;
+    }
     if(page==1){if(id==0 || id==2)fm1_mod_library_move(&library,step);release(&control_lock,f);return;}
-    if(page==2){if(song.loaded && (id==0 || id==2 || id==6))select_sample(step);
+    if(page==2){if(id==0 || id==2 || id==6)fm1_tracker_controls_encoder(&gestures,&editor,0,6,step);
         release(&control_lock,f);return;}
-    if(!song.loaded || transfer.active || transfer.exporting){release(&control_lock,f);return;}
-    if(control.running && editor.edit && (id==4 || id==5)){
-        editor.order=player.current_order;editor.row=player.current_row;
-    }
-    pattern=song.bytes[952+editor.order];
-    if(id==0)fm1_mod_editor_move(&editor,0,step,0); /* SELECT: track */
-    else if(id==1){if(!control.running)fm1_mod_editor_move(&editor,0,0,step);} /* ALGORITHM: order */
-    else if(id==2){if(!control.running)fm1_mod_editor_move(&editor,step,0,0);} /* KNOB1: row */
-    else if(id==3){int n=(int)editor.step+step;if(n<0)n=0;if(n>16)n=16;editor.step=(uint8_t)n;}
-    else if(id==4 && !editor.edit){mix_stereo=(uint8_t)(step>0);player.stereo=mix_stereo;}
-    else if(id==6)select_sample(step); /* PRESETS: sample */
-    else if(editor.edit && editor.sample_mode && (id==4 || id==5)){
-        unsigned h=20u+(editor.sample-1u)*30u;
-        if(id==4){int volume=(int)song.bytes[h+25]+step;
-            if(volume<0)volume=0;if(volume>64)volume=64;
-            fm1_mod_set_sample_volume(&song,editor.sample,(unsigned)volume);
-        }else fm1_mod_set_sample_finetune(&song,editor.sample,(song.bytes[h+24]+step+16)&15);
-    }
-    else if(editor.edit && !fm1_mod_cell_get(&song,pattern,editor.row,editor.channel,&cell)){
-        if(id==4)cell.effect=(uint8_t)((cell.effect+step+16)&15);
-        else if(id==5)cell.param=(uint8_t)(cell.param+step);
-        fm1_mod_cell_set(&song,pattern,editor.row,editor.channel,cell);
+    if(view_context.bank_open && id==2){
+        int index=(int)view_context.bank_index+step;
+        if(index<0)index=0;if(index>=active_bank.count)index=active_bank.count-1;
+        view_context.bank_index=(uint16_t)index;bank_audition(48);
+    }else if(view_context.arranger && id==4){
+        if(!control.running){int pattern=fm1_mod_get_order(&song,editor.order)+step;
+            if(pattern<0)pattern=0;if(pattern>=song.patterns)pattern=song.patterns-1;
+            rc=fm1_mod_set_order(&song,editor.order,(unsigned)pattern);
+            if(!rc)fm1_mod_editor_block_clear(&editor);
+            notice(rc?"PATTERN NOT AVAILABLE":"ORDER PATTERN ASSIGNED");}
+    }else {
+        rc=fm1_tracker_controls_encoder(&gestures,&editor,control.running,id,step);
+        if(id==6)sample_notice("",8);
+        else if(id==5 && editor.field!=FM1_FIELD_PARAM){char text[40];snprintf(text,sizeof(text),"ENTRY STEP %02u",editor.step);notice(text);}
+        else if(rc)notice("FIELD VALUE UNAVAILABLE");
     }
     release(&control_lock,f);
 }
@@ -329,6 +419,17 @@ __attribute__((noinline,used)) static void fm1_peripheral_task(void *u){
     }
 #endif
     fm1_mod_editor_init(&editor,&song);editor.octave=-1;editor.edit=0;
+#ifdef FM1_MOD_EMBEDDED_DEFAULT
+    if(!memcmp(song.bytes,"FM1 ORIGINAL BREAK",18)){
+        static const uint8_t starter_quick[8]={1,3,6,7,17,20,13,27};
+        memcpy(editor.quick,starter_quick,sizeof(starter_quick));
+    }
+#endif
+    fm1_tracker_controls_init(&gestures);
+#ifdef FM1_MOD_EMBEDDED_BANK
+    fm1_bank_load(&active_bank,fm1_mod_active_bank,fm1_mod_active_bank_size);
+#endif
+    view_context.bank_count=active_bank.count;
     lcd_error=fm1_display_test_init();
 #ifdef FM1_LCD_ASYNC
     if(!lcd_error)lcd_error=fm1_display_async_start();
@@ -351,10 +452,11 @@ __attribute__((noinline,used)) static void fm1_peripheral_task(void *u){
         if(closing)shutdown();
         if(op){action(op);f=take(&control_lock);control.executing=0;running=control.running;release(&control_lock,f);}
         f=take(&audio_lock);queued=wr-rd;release(&audio_lock,f);
-        if((running || player.preview_active) && song.loaded && !audio_error && queued<=2048-FM1_MOD_BLOCK){
+        if((running || player.preview_active) && song.loaded && !audio_error && queued<=PCM_RING_FRAMES-FM1_MOD_BLOCK){
             unsigned i;fm1_mod_render(&player,block,FM1_MOD_BLOCK);
             f=take(&audio_lock);for(i=0;i<FM1_MOD_BLOCK;i++){
-                ring[wr&2047][0]=block[2*i];ring[wr&2047][1]=block[2*i+1];wr++;}release(&audio_lock,f);
+                ring[wr_slot][0]=block[2*i];ring[wr_slot][1]=block[2*i+1];wr++;
+                wr_slot=fm1_pcm_next_slot(wr_slot);}release(&audio_lock,f);
         }
         if(!scan_enabled && key_error && scan_retries<3 &&
            (uint32_t)(now-scan_retry_at)>=250u){
@@ -374,17 +476,27 @@ __attribute__((noinline,used)) static void fm1_peripheral_task(void *u){
         scan_rc=scan_enabled?fm1_wl82_keyscan_async_raw(&scanner,rows):FM1_NES_BUSY;
         memcpy(counts,encoders.count,sizeof(counts));release(&input_lock,f);
         if(!scan_rc){
-            uint64_t keys=fm1_stock_decode_keys(rows),down;
+            uint64_t keys=fm1_stock_decode_keys(rows),down,up;
             if(keys!=candidate){candidate=keys;changed=now;}
             if((uint32_t)(now-changed)>=10 && candidate!=stable){
-                down=candidate&~stable;stable=candidate;
-                for(i=0;i<41;i++)if((down>>i)&1u)input_key(i);
+                down=candidate&~stable;up=stable&~candidate;stable=candidate;
+                /* Modifier presses precede shortcut presses in one scan;
+                 * releases preserve the pending chord even if EDIT rises first. */
+                if((down>>6)&1u)control_event(fm1_tracker_controls_key(&gestures,6,1,now,editor.sample));
+                if((down>>9)&1u)control_event(fm1_tracker_controls_key(&gestures,9,1,now,editor.sample));
+                if((down>>11)&1u)control_event(fm1_tracker_controls_key(&gestures,11,1,now,editor.sample));
+                for(i=0;i<41;i++)if(i!=6 && i!=9 && i!=11 && ((down>>i)&1u))
+                    control_event(fm1_tracker_controls_key(&gestures,i,1,now,editor.sample));
+                for(i=0;i<41;i++)if((up>>i)&1u)
+                    control_event(fm1_tracker_controls_key(&gestures,i,0,now,editor.sample));
             }
         } else if(scan_rc!=FM1_NES_BUSY && scan_enabled){
             key_error=scan_rc;scan_retry_at=now;bit_clr_ie(IRQ_SPI2_IDX,0);
             f=take(&input_lock);scan_enabled=0;fm1_wl82_keyscan_stop(&scanner);release(&input_lock,f);
             if(input_irq_registered){unrequest_irq(IRQ_SPI2_IDX,0);input_irq_registered=0;}
         }
+        for(;;){fm1_tracker_control_event event=fm1_tracker_controls_tick(&gestures,now);
+            if(!event.kind)break;control_event(event);}
         if(scan_enabled)for(i=0;i<7;i++){
             int steps=fm1_encoder_detents(counts[i],&prior[i],&accum[i]);
             while(steps>0){input_encoder(i,1);steps--;}

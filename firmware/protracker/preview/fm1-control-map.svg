@@ -1,0 +1,279 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1000 600" role="img" aria-labelledby="fm1-map-title fm1-map-desc">
+  <title id="fm1-map-title">FM-1 tracker control map</title>
+  <desc id="fm1-map-desc">FM-1 top panel, based on the device reference photograph. MASTER and SELECT are at the upper left; PRESETS and ALGORITHM below them; OCT minus and OCT plus beneath. The square tracker display is in the center. KNOB1 through KNOB4 are at the upper right. Two rows of function buttons beneath them read FX, SEL, ENV, LFO, EDIT, GLO, then HOME, SAVE, ARP, SEQ, PLAY STOP, REC. Sixteen lower piano pads and eleven upper chromatic pads span the bottom. Added note labels show pitches at keyboard octave OC minus one.</desc>
+  <defs>
+    <linearGradient id="panel-fill" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#40454b"/><stop offset="1" stop-color="#2b3036"/></linearGradient>
+    <linearGradient id="dial-fill" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#50555b"/><stop offset="1" stop-color="#24282d"/></linearGradient>
+    <linearGradient id="pad-fill" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#383d43"/><stop offset="1" stop-color="#24282e"/></linearGradient>
+    <filter id="panel-shadow" x="-10%" y="-15%" width="120%" height="130%"><feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="#090b0e" flood-opacity=".28"/></filter>
+    <filter id="dial-shadow" x="-35%" y="-35%" width="170%" height="180%"><feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#050608" flood-opacity=".55"/></filter>
+  </defs>
+  <style>
+    text { font-family: Inter, 'Segoe UI', Arial, sans-serif; }
+    .panel-label { fill: #eeeae0; font-size: 15px; letter-spacing: .7px; text-anchor: middle; }
+    .button-label { fill: #fbf9f0; font-size: 13px; font-weight: 650; text-anchor: middle; }
+    .key-label { fill: #ece8dc; font-size: 13px; font-weight: 550; text-anchor: middle; }
+    .control { cursor: pointer; outline: none; }
+    .control-face { transition: fill .16s, stroke .16s; }
+    .control:hover .control-face, .control:focus .control-face { stroke: #b0d9ee; stroke-width: 3; }
+    .active .control-face, .control.active .control-face { fill: #38769b; stroke: #9ae2ff; stroke-width: 4; }
+    .active .button-label, .active .panel-label, .active .key-label { fill: #fff; font-weight: 750; }
+  </style>
+  <rect x="20" y="24" width="960" height="550" rx="42" fill="#343a42" stroke="#14171b" stroke-width="3" filter="url(#panel-shadow)"/>
+  <path d="M64 30 H936 Q974 30 974 71" fill="none" stroke="#686d71" stroke-opacity=".55" stroke-width="2"/>
+  <rect x="277" y="66" width="242" height="239" rx="30" fill="#0b0e12" stroke="#555b60" stroke-width="2"/>
+  <rect x="295" y="83" width="206" height="206" fill="#08032f"/>
+  <image x="295" y="83" width="206" height="206" preserveAspectRatio="xMidYMid meet" image-rendering="pixelated" href="data:image/png;base64,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"/>
+  <rect x="295" y="83" width="206" height="206" fill="none" stroke="#b7d7df" stroke-opacity=".24"/>
+  <g class="control" data-control="MASTER" data-label="MASTER" role="button" tabindex="0" aria-label="MASTER"><title>MASTER</title>
+    <text class="panel-label" fill="#eeeae0" font-family="Arial, sans-serif" font-size="15" text-anchor="middle" letter-spacing=".7" x="102" y="71">MASTER</text>
+    <circle cx="102" cy="114" r="26" fill="#11151a" stroke="#73797e" stroke-width="1" filter="url(#dial-shadow)"/>
+    <circle class="control-face" cx="102" cy="114" r="21" fill="#373d45" stroke="#0b0e12" stroke-width="2"/>
+    <circle cx="102" cy="114" r="17" fill="none" stroke="#91969b" stroke-opacity=".4" stroke-width=".8"/>
+    <path d="M102 97 v5" stroke="#f9f5e8" stroke-width="3.6" stroke-linecap="round" transform="rotate(-135 102 114)"/>
+  </g>
+  <g class="control" data-control="SELECT" data-label="SELECT" role="button" tabindex="0" aria-label="SELECT"><title>SELECT</title>
+    <text class="panel-label" fill="#eeeae0" font-family="Arial, sans-serif" font-size="15" text-anchor="middle" letter-spacing=".7" x="207" y="71">SELECT</text>
+    <circle cx="207" cy="114" r="26" fill="#11151a" stroke="#73797e" stroke-width="1" filter="url(#dial-shadow)"/>
+    <circle class="control-face" cx="207" cy="114" r="21" fill="#373d45" stroke="#0b0e12" stroke-width="2"/>
+    <circle cx="207" cy="114" r="17" fill="none" stroke="#91969b" stroke-opacity=".4" stroke-width=".8"/>
+    <path d="M207 97 v5" stroke="#f9f5e8" stroke-width="3.6" stroke-linecap="round" transform="rotate(0 207 114)"/>
+  </g>
+  <g class="control" data-control="PRESETS" data-label="PRESETS" role="button" tabindex="0" aria-label="PRESETS"><title>PRESETS</title>
+    <text class="panel-label" fill="#eeeae0" font-family="Arial, sans-serif" font-size="15" text-anchor="middle" letter-spacing=".7" x="102" y="175">PRESETS</text>
+    <circle cx="102" cy="218" r="26" fill="#11151a" stroke="#73797e" stroke-width="1" filter="url(#dial-shadow)"/>
+    <circle class="control-face" cx="102" cy="218" r="21" fill="#373d45" stroke="#0b0e12" stroke-width="2"/>
+    <circle cx="102" cy="218" r="17" fill="none" stroke="#91969b" stroke-opacity=".4" stroke-width=".8"/>
+    <path d="M102 201 v5" stroke="#f9f5e8" stroke-width="3.6" stroke-linecap="round" transform="rotate(0 102 218)"/>
+  </g>
+  <g class="control" data-control="ALGORITHM" data-label="ALGORITHM" role="button" tabindex="0" aria-label="ALGORITHM"><title>ALGORITHM</title>
+    <text class="panel-label" fill="#eeeae0" font-family="Arial, sans-serif" font-size="15" text-anchor="middle" letter-spacing=".7" x="207" y="175">ALGORITHM</text>
+    <circle cx="207" cy="218" r="26" fill="#11151a" stroke="#73797e" stroke-width="1" filter="url(#dial-shadow)"/>
+    <circle class="control-face" cx="207" cy="218" r="21" fill="#373d45" stroke="#0b0e12" stroke-width="2"/>
+    <circle cx="207" cy="218" r="17" fill="none" stroke="#91969b" stroke-opacity=".4" stroke-width=".8"/>
+    <path d="M207 201 v5" stroke="#f9f5e8" stroke-width="3.6" stroke-linecap="round" transform="rotate(0 207 218)"/>
+  </g>
+  <g class="control" data-control="KNOB1" data-label="KNOB1" role="button" tabindex="0" aria-label="KNOB1"><title>KNOB1</title>
+    <text class="panel-label" fill="#eeeae0" font-family="Arial, sans-serif" font-size="15" text-anchor="middle" letter-spacing=".7" x="586" y="71">KNOB1</text>
+    <circle cx="586" cy="114" r="26" fill="#11151a" stroke="#73797e" stroke-width="1" filter="url(#dial-shadow)"/>
+    <circle class="control-face" cx="586" cy="114" r="21" fill="#373d45" stroke="#0b0e12" stroke-width="2"/>
+    <circle cx="586" cy="114" r="17" fill="none" stroke="#91969b" stroke-opacity=".4" stroke-width=".8"/>
+    <path d="M586 97 v5" stroke="#f9f5e8" stroke-width="3.6" stroke-linecap="round" transform="rotate(0 586 114)"/>
+  </g>
+  <g class="control" data-control="KNOB2" data-label="KNOB2" role="button" tabindex="0" aria-label="KNOB2"><title>KNOB2</title>
+    <text class="panel-label" fill="#eeeae0" font-family="Arial, sans-serif" font-size="15" text-anchor="middle" letter-spacing=".7" x="697" y="71">KNOB2</text>
+    <circle cx="697" cy="114" r="26" fill="#11151a" stroke="#73797e" stroke-width="1" filter="url(#dial-shadow)"/>
+    <circle class="control-face" cx="697" cy="114" r="21" fill="#373d45" stroke="#0b0e12" stroke-width="2"/>
+    <circle cx="697" cy="114" r="17" fill="none" stroke="#91969b" stroke-opacity=".4" stroke-width=".8"/>
+    <path d="M697 97 v5" stroke="#f9f5e8" stroke-width="3.6" stroke-linecap="round" transform="rotate(0 697 114)"/>
+  </g>
+  <g class="control" data-control="KNOB3" data-label="KNOB3" role="button" tabindex="0" aria-label="KNOB3"><title>KNOB3</title>
+    <text class="panel-label" fill="#eeeae0" font-family="Arial, sans-serif" font-size="15" text-anchor="middle" letter-spacing=".7" x="808" y="71">KNOB3</text>
+    <circle cx="808" cy="114" r="26" fill="#11151a" stroke="#73797e" stroke-width="1" filter="url(#dial-shadow)"/>
+    <circle class="control-face" cx="808" cy="114" r="21" fill="#373d45" stroke="#0b0e12" stroke-width="2"/>
+    <circle cx="808" cy="114" r="17" fill="none" stroke="#91969b" stroke-opacity=".4" stroke-width=".8"/>
+    <path d="M808 97 v5" stroke="#f9f5e8" stroke-width="3.6" stroke-linecap="round" transform="rotate(0 808 114)"/>
+  </g>
+  <g class="control" data-control="KNOB4" data-label="KNOB4" role="button" tabindex="0" aria-label="KNOB4"><title>KNOB4</title>
+    <text class="panel-label" fill="#eeeae0" font-family="Arial, sans-serif" font-size="15" text-anchor="middle" letter-spacing=".7" x="919" y="71">KNOB4</text>
+    <circle cx="919" cy="114" r="26" fill="#11151a" stroke="#73797e" stroke-width="1" filter="url(#dial-shadow)"/>
+    <circle class="control-face" cx="919" cy="114" r="21" fill="#373d45" stroke="#0b0e12" stroke-width="2"/>
+    <circle cx="919" cy="114" r="17" fill="none" stroke="#91969b" stroke-opacity=".4" stroke-width=".8"/>
+    <path d="M919 97 v5" stroke="#f9f5e8" stroke-width="3.6" stroke-linecap="round" transform="rotate(0 919 114)"/>
+  </g>
+  <rect x="77" y="274" width="157" height="47" rx="12" fill="#24292f" stroke="#14171b" stroke-width="3"/>
+  <g class="control" data-control="OCT_MINUS" data-label="OCT−" role="button" tabindex="0" aria-label="OCT−"><title>OCT−</title>
+    <rect class="control-face" x="84" y="281" width="65" height="33" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="116.5" y="301.5">OCT−</text>
+  </g>
+  <g class="control" data-control="OCT_PLUS" data-label="OCT+" role="button" tabindex="0" aria-label="OCT+"><title>OCT+</title>
+    <rect class="control-face" x="161" y="281" width="65" height="33" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="193.5" y="301.5">OCT+</text>
+  </g>
+  <rect x="549" y="185" width="420" height="123" rx="17" fill="#282d33" stroke="#14171b" stroke-width="3"/>
+  <g class="control" data-control="FX" data-label="FX" role="button" tabindex="0" aria-label="FX"><title>FX</title>
+    <rect class="control-face" x="559" y="195" width="59" height="45" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="588.5" y="221.5">FX</text>
+  </g>
+  <g class="control" data-control="SCL" data-label="SEL" role="button" tabindex="0" aria-label="SEL"><title>SEL</title>
+    <rect class="control-face" x="626" y="195" width="59" height="45" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="655.5" y="221.5">SEL</text>
+  </g>
+  <g class="control" data-control="ENV" data-label="ENV" role="button" tabindex="0" aria-label="ENV"><title>ENV</title>
+    <rect class="control-face" x="693" y="195" width="59" height="45" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="722.5" y="221.5">ENV</text>
+  </g>
+  <g class="control" data-control="LFO" data-label="LFO" role="button" tabindex="0" aria-label="LFO"><title>LFO</title>
+    <rect class="control-face" x="760" y="195" width="59" height="45" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="789.5" y="221.5">LFO</text>
+  </g>
+  <g class="control" data-control="EDIT" data-label="EDIT" role="button" tabindex="0" aria-label="EDIT"><title>EDIT</title>
+    <rect class="control-face" x="827" y="195" width="59" height="45" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="856.5" y="221.5">EDIT</text>
+  </g>
+  <g class="control" data-control="GLO" data-label="GLO" role="button" tabindex="0" aria-label="GLO"><title>GLO</title>
+    <rect class="control-face" x="894" y="195" width="59" height="45" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="923.5" y="221.5">GLO</text>
+  </g>
+  <g class="control" data-control="HOME" data-label="HOME" role="button" tabindex="0" aria-label="HOME"><title>HOME</title>
+    <rect class="control-face" x="559" y="251" width="59" height="45" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="588.5" y="277.5">HOME</text>
+  </g>
+  <g class="control" data-control="SAVE" data-label="SAVE" role="button" tabindex="0" aria-label="SAVE"><title>SAVE</title>
+    <rect class="control-face" x="626" y="251" width="59" height="45" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="655.5" y="277.5">SAVE</text>
+  </g>
+  <g class="control" data-control="ARP" data-label="ARP" role="button" tabindex="0" aria-label="ARP"><title>ARP</title>
+    <rect class="control-face" x="693" y="251" width="59" height="45" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="722.5" y="277.5">ARP</text>
+  </g>
+  <g class="control" data-control="SEQ" data-label="SEQ" role="button" tabindex="0" aria-label="SEQ"><title>SEQ</title>
+    <rect class="control-face" x="760" y="251" width="59" height="45" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="789.5" y="277.5">SEQ</text>
+  </g>
+  <g class="control" data-control="PLAY" data-label="PLAY STOP" role="button" tabindex="0" aria-label="PLAY STOP"><title>PLAY STOP</title>
+    <rect class="control-face" x="827" y="251" width="59" height="45" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="856.5" y="269"><tspan x="856.5">PLAY</tspan><tspan x="856.5" dy="14">STOP</tspan></text>
+  </g>
+  <g class="control" data-control="REC" data-label="REC" role="button" tabindex="0" aria-label="REC"><title>REC</title>
+    <rect class="control-face" x="894" y="251" width="59" height="45" rx="9" fill="#30363e" stroke="#090c10" stroke-width="3"/>
+    <text class="button-label" fill="#fbf9f0" font-family="Arial, sans-serif" font-size="13" font-weight="650" text-anchor="middle" x="923.5" y="277.5">REC</text>
+  </g>
+  <rect x="54" y="343" width="894" height="213" rx="29" fill="#252a30" stroke="#11151a" stroke-width="3"/>
+  <text x="50" y="591" font-size="12" fill="#667280">Piano labels show the default OC −1 octave. SEL is the physical label for the firmware's SCL action.</text>
+  <g class="control" data-control="NOTE_41" data-label="F1 piano key" role="button" tabindex="0" aria-label="F1 piano key"><title>F1 piano key</title>
+    <rect class="control-face" x="71" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M93 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="93" y="524">F1</text>
+  </g>
+  <g class="control" data-control="NOTE_43" data-label="G1 piano key" role="button" tabindex="0" aria-label="G1 piano key"><title>G1 piano key</title>
+    <rect class="control-face" x="124" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M146 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="146" y="524">G1</text>
+  </g>
+  <g class="control" data-control="NOTE_45" data-label="A1 piano key" role="button" tabindex="0" aria-label="A1 piano key"><title>A1 piano key</title>
+    <rect class="control-face" x="177" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M199 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="199" y="524">A1</text>
+  </g>
+  <g class="control" data-control="NOTE_47" data-label="B1 piano key" role="button" tabindex="0" aria-label="B1 piano key"><title>B1 piano key</title>
+    <rect class="control-face" x="230" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M252 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="252" y="524">B1</text>
+  </g>
+  <g class="control" data-control="NOTE_48" data-label="C2 piano key" role="button" tabindex="0" aria-label="C2 piano key"><title>C2 piano key</title>
+    <rect class="control-face" x="283" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M305 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="305" y="524">C2</text>
+  </g>
+  <g class="control" data-control="NOTE_50" data-label="D2 piano key" role="button" tabindex="0" aria-label="D2 piano key"><title>D2 piano key</title>
+    <rect class="control-face" x="336" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M358 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="358" y="524">D2</text>
+  </g>
+  <g class="control" data-control="NOTE_52" data-label="E2 piano key" role="button" tabindex="0" aria-label="E2 piano key"><title>E2 piano key</title>
+    <rect class="control-face" x="389" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M411 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="411" y="524">E2</text>
+  </g>
+  <g class="control" data-control="NOTE_53" data-label="F2 piano key" role="button" tabindex="0" aria-label="F2 piano key"><title>F2 piano key</title>
+    <rect class="control-face" x="442" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M464 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="464" y="524">F2</text>
+  </g>
+  <g class="control" data-control="NOTE_55" data-label="G2 piano key" role="button" tabindex="0" aria-label="G2 piano key"><title>G2 piano key</title>
+    <rect class="control-face" x="495" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M517 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="517" y="524">G2</text>
+  </g>
+  <g class="control" data-control="NOTE_57" data-label="A2 piano key" role="button" tabindex="0" aria-label="A2 piano key"><title>A2 piano key</title>
+    <rect class="control-face" x="548" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M570 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="570" y="524">A2</text>
+  </g>
+  <g class="control" data-control="NOTE_59" data-label="B2 piano key" role="button" tabindex="0" aria-label="B2 piano key"><title>B2 piano key</title>
+    <rect class="control-face" x="601" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M623 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="623" y="524">B2</text>
+  </g>
+  <g class="control" data-control="NOTE_60" data-label="C3 piano key" role="button" tabindex="0" aria-label="C3 piano key"><title>C3 piano key</title>
+    <rect class="control-face" x="654" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M676 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="676" y="524">C3</text>
+  </g>
+  <g class="control" data-control="NOTE_62" data-label="D3 piano key" role="button" tabindex="0" aria-label="D3 piano key"><title>D3 piano key</title>
+    <rect class="control-face" x="707" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M729 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="729" y="524">D3</text>
+  </g>
+  <g class="control" data-control="NOTE_64" data-label="E3 piano key" role="button" tabindex="0" aria-label="E3 piano key"><title>E3 piano key</title>
+    <rect class="control-face" x="760" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M782 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="782" y="524">E3</text>
+  </g>
+  <g class="control" data-control="NOTE_65" data-label="F3 piano key" role="button" tabindex="0" aria-label="F3 piano key"><title>F3 piano key</title>
+    <rect class="control-face" x="813" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M835 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="835" y="524">F3</text>
+  </g>
+  <g class="control" data-control="NOTE_67" data-label="G3 piano key" role="button" tabindex="0" aria-label="G3 piano key"><title>G3 piano key</title>
+    <rect class="control-face" x="866" y="451" width="44" height="87" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M888 466 v34" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="888" y="524">G3</text>
+  </g>
+  <g class="control" data-control="NOTE_42" data-label="F♯1 piano key" role="button" tabindex="0" aria-label="F♯1 piano key"><title>F♯1 piano key</title>
+    <rect class="control-face" x="97.5" y="358" width="44" height="85" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M119.5 373 v23" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="119.5" y="427">F♯1</text>
+  </g>
+  <g class="control" data-control="NOTE_44" data-label="G♯1 piano key" role="button" tabindex="0" aria-label="G♯1 piano key"><title>G♯1 piano key</title>
+    <rect class="control-face" x="150.5" y="358" width="44" height="85" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M172.5 373 v23" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="172.5" y="427">G♯1</text>
+  </g>
+  <g class="control" data-control="NOTE_46" data-label="A♯1 piano key" role="button" tabindex="0" aria-label="A♯1 piano key"><title>A♯1 piano key</title>
+    <rect class="control-face" x="203.5" y="358" width="44" height="85" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M225.5 373 v23" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="225.5" y="427">A♯1</text>
+  </g>
+  <g class="control" data-control="NOTE_49" data-label="C♯2 piano key" role="button" tabindex="0" aria-label="C♯2 piano key"><title>C♯2 piano key</title>
+    <rect class="control-face" x="309.5" y="358" width="44" height="85" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M331.5 373 v23" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="331.5" y="427">C♯2</text>
+  </g>
+  <g class="control" data-control="NOTE_51" data-label="D♯2 piano key" role="button" tabindex="0" aria-label="D♯2 piano key"><title>D♯2 piano key</title>
+    <rect class="control-face" x="362.5" y="358" width="44" height="85" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M384.5 373 v23" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="384.5" y="427">D♯2</text>
+  </g>
+  <g class="control" data-control="NOTE_54" data-label="F♯2 piano key" role="button" tabindex="0" aria-label="F♯2 piano key"><title>F♯2 piano key</title>
+    <rect class="control-face" x="468.5" y="358" width="44" height="85" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M490.5 373 v23" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="490.5" y="427">F♯2</text>
+  </g>
+  <g class="control" data-control="NOTE_56" data-label="G♯2 piano key" role="button" tabindex="0" aria-label="G♯2 piano key"><title>G♯2 piano key</title>
+    <rect class="control-face" x="521.5" y="358" width="44" height="85" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M543.5 373 v23" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="543.5" y="427">G♯2</text>
+  </g>
+  <g class="control" data-control="NOTE_58" data-label="A♯2 piano key" role="button" tabindex="0" aria-label="A♯2 piano key"><title>A♯2 piano key</title>
+    <rect class="control-face" x="574.5" y="358" width="44" height="85" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M596.5 373 v23" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="596.5" y="427">A♯2</text>
+  </g>
+  <g class="control" data-control="NOTE_61" data-label="C♯3 piano key" role="button" tabindex="0" aria-label="C♯3 piano key"><title>C♯3 piano key</title>
+    <rect class="control-face" x="680.5" y="358" width="44" height="85" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M702.5 373 v23" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="702.5" y="427">C♯3</text>
+  </g>
+  <g class="control" data-control="NOTE_63" data-label="D♯3 piano key" role="button" tabindex="0" aria-label="D♯3 piano key"><title>D♯3 piano key</title>
+    <rect class="control-face" x="733.5" y="358" width="44" height="85" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M755.5 373 v23" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="755.5" y="427">D♯3</text>
+  </g>
+  <g class="control" data-control="NOTE_66" data-label="F♯3 piano key" role="button" tabindex="0" aria-label="F♯3 piano key"><title>F♯3 piano key</title>
+    <rect class="control-face" x="839.5" y="358" width="44" height="85" rx="20" fill="#30363e" stroke="#080b0f" stroke-width="3"/>
+    <path d="M861.5 373 v23" stroke="#faf8ee" stroke-width="5" stroke-linecap="round"/>
+    <text class="key-label" fill="#ece8dc" font-family="Arial, sans-serif" font-size="13" font-weight="550" text-anchor="middle" x="861.5" y="427">F♯3</text>
+  </g>
+</svg>
