@@ -2,7 +2,15 @@
 
 ## Source and private build paths
 
-`fm1-doom/tools/stage_wad.py` prunes and pixelates the original IWAD; `pack_archive.py` builds FMD1. DirectE1M1 uses4096-byte archive blocks/cache and a296KiB fixed Doom zone (`src/i_zone_fm1.c`). Current source framebuffer is160x100 with a160x93 gameplay view, scaled to the240x240 LCD. Smooth8x8 and detailed views are switchable with D-sharp4. Menus use scaled original patch images.
+`fm1-doom/tools/stage_wad.py` prunes and pixelates the original IWAD;
+`pack_archive.py` builds FMD1. The current E1M1 profile uses 4,096-byte archive
+blocks/cache, 4×4 world/enemy art, original pistol pixels and 2×2 fist art.
+Higher-resolution asset work was cancelled. The live-editor revision partitions
+the previous 296 KiB fixed allocation into a 294 KiB Doom zone and a dedicated
+2 KiB synth delay (`src/i_zone_fm1.c`). The source framebuffer is 160×100;
+gameplay uses all 160×93 samples scaled to 240×224 above a 16-row HUD. The
+8×8 presentation mode and D-sharp4 toggle are removed. Menus retain original
+patch images. This source revision is not yet physically accepted.
 
 Use the matching profile and generated engine objects; `build_target_candidate.py` checks stale source/header/configuration dependencies and target entry, RAM/heap and emitted stack requirements. Host tests and a linked ELF are separate from actual flash/readback and device acceptance.
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "fm1-mod-fw",
-  "version": "0.1.2",
+  "version": "0.1.8",
   "description": "Build, deploy and debug FM-1 firmware using verified board and Doom port findings.",
   "author": { "name": "Keitark" },
   "extensions": {
