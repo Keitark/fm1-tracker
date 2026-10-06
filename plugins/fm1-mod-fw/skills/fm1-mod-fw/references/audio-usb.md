@@ -47,3 +47,33 @@ CDC presence does not imply audio interfaces exist. The deployed Doom8a36a90 was
 `fm1-mdx/USB_AUDIO.md` records an older packet writer stalling after75.62 seconds. Its bounded replacement was an unflashed candidate at this checkpoint. Reuse source patterns with current tests and actual target validation, not a claim that every MDX revision is qualified.
 
 For capture-only native44100Hz stereoPCM16, EP1IN is free alongside Doom CDC. A small bounded producer FIFO, persistent pending packet and aligned endpoint DMA can fit with a measured static/linker budget. Preserve packet data on endpoint busy, bound IRQ work, handle alternate-setting/reset epochs and report drops/underruns. Keep the4096-byte reviewed runtime heap reserve; do not weaken the gate to force a build through.
+
+## Allocator and capture bring-up checkpoint (2026-10-06)
+
+The linked SDK allocator is `system.a(malloc.c.o)` dlmalloc, not the SDK source
+`apps/common/system/mem_heap.c`. Its chunks round to32B: IIS's1024B DMA request
+needs1056B. Heap growth uses4096B increments, and the pinned `sbrk` rejects
+an end at or beyond HEAP_END. `get_malloc_remain_heap_size` combines free and
+uncommitted space; it is neither a largest-block measurement nor proof that
+another allocation can succeed. Keep this distinction in startup gates.
+
+The first Doom capture image was readback-verified (`c510e024...`) and exposed
+CDC plus a Windows recording endpoint after UBOOT reset. IIS then reported
+ready0/error-1/irqs0 and stopped its ADC/capture producer during cleanup.
+After the user's reset Doom remained visible but no USB interface appeared.
+This establishes neither a USB recording nor the exact allocation failure.
+
+Running Doom proves `task_create(doom_usb)` succeeded: app_main returns before
+creating Doom when that call fails. USB initialization can separately fail
+on CDC allocations (-3), configuration allocation (-1), or EP0 DMA (-2), then
+sleep indefinitely. Capture initialization itself is static; its descriptor
+order matches MDX and its endpoint DMA does not use the CDC pool.
+
+The replacement restores1024B headroom using USB stack2560B and a512B CDC
+reply ring. Every reply is bounded511B; production-task tests cover full
+replies, busy retries, burst rejection and generation cancellation. Emitted
+diagnostic chain1472B plus1024B SDK margin fits the stack. Linker heap45132B
+and reviewed reserve5120B are source/build evidence; cold boot, live stack,
+IIS timing, the physical knob and actual capture still require measurement.
+Boot gain follows the ADC. `DOOM MUTE 1/0` is an optional speaker override;
+capture taps the mixed audio before that gain/override.
