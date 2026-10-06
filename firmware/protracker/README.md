@@ -6,6 +6,13 @@ It edits ordinary self-contained 31-sample, four-channel `M.K.` / `M!K!` MODs
 in a 256 KiB RAM song buffer. The ProTracker 3.15 comparison is recorded in
 [PROTRACKER315_WORKFLOW.md](PROTRACKER315_WORKFLOW.md).
 
+Start with the [graphical first-MOD tutorial](TUTORIAL.html): download/open the
+HTML in a browser for a labeled FM-1 panel, step highlights, clickable controls,
+a four-channel pattern, A–A–B–fill arrangement, and USB saving. It works offline.
+The [text version](TUTORIAL.md) contains the full control tables too.
+Regenerate the HTML with `python firmware/protracker/tools/build_tutorial.py`
+(requires `markdown-it-py`); its illustration and screen previews are embedded.
+
 ## Status
 
 The source implements [Issue #2](https://github.com/Keitark/fm1-tracker/issues/2)

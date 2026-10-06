@@ -17,11 +17,11 @@ This comparison does not establish exact behavior of every later bugfix.
 
 | Behavior | ProTracker source/manual | FM-1 mapping |
 | --- | --- | --- |
-| Audition without modifying the pattern | `EditMode=0` bypasses note insertion, then still calls `PlayNote`; `PT315.S:8199,8263` | EDIT returns to audition; top line `E` |
-| Write while stopped | EDIT stops playback and enables editing; `PT315.S:15981`; `PT.help.txt:112` | REC toggles WRITE; top line `W` |
-| Write while playing | RECORD enables playback and editing; `PT315.S:5387`; `PT.help.txt:118` | PLAY starts playback, then REC enables WRITE |
+| Audition without modifying the pattern | `EditMode=0` bypasses note insertion, then still calls `PlayNote`; `PT315.S:8199,8263` | EDIT returns to audition; header EDIT |
+| Write while stopped | EDIT stops playback and enables editing; `PT315.S:15981`; `PT.help.txt:112` | REC toggles WRITE while stopped; header WRITE |
+| Write while playing | RECORD enables playback and editing; `PT315.S:5387`; `PT.help.txt:118` | Current v32 permits audition during playback; REC requires stopped playback and does not enable live recording |
 | Enter a note | Replaces note/sample and retains effect data; `PT315.S:8232` | Piano key writes selected sample and pitch on the selected track, preserving effect/parameter |
-| Entry step | Default 1, zero holds the row, wraps at 64; no extra advance during playback; `EditMoveDown`, `PT315.S:8884` | KNOB2 selects 0–16; header `T00` holds the row; stopped WRITE advances, live WRITE follows playback |
+| Entry step | Default 1, zero holds the row, wraps at 64; no extra advance during playback; `EditMoveDown`, `PT315.S:8884` | KNOB4 selects 0,1,2,3,4,6,8,16 when PARAM is not selected; header T00 holds the row; stopped WRITE advances |
 | Select track | Tab moves between four tracks; `PT315.S:6652` | SELECT moves one track per click and stays on that track after entry |
 | Move row | Up/down wraps within 64 rows and is blocked during playback; `PT315.S:8815` | KNOB1 scrolls while stopped; playback owns the row while running |
 | Select sample | Arrows clamp at slots 1–31; `PT315.S:13463` | PRESETS selects one sample per click and clamps at the ends |
@@ -34,8 +34,8 @@ uses four decoded contact edges; SELECT and PRESETS were physically confirmed
 on installed v25.
 
 PT's live RECORD can quantize a key to the current or next row using playback
-tick position (`QuantizeCheck`, `PT315.S:8281`; `PT.help.txt:741`). FM-1 currently
-writes the current triggered row and does not implement that quantization.
+tick position (`QuantizeCheck`, `PT315.S:8281`; `PT.help.txt:741`). Current v32
+does not implement live note recording or that quantization.
 The preview is a separate single sample voice associated with the selected
 track; it does not reproduce PT's direct replacement of that Paula channel.
 
