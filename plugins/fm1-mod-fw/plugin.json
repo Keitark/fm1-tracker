@@ -1,0 +1,15 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "fm1-mod-fw",
+  "version": "0.1.1",
+  "description": "Build, deploy and debug FM-1 firmware using verified board and Doom port findings.",
+  "author": { "name": "Keitark" },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "FM-1 Mod Firmware",
+        "shortDescription": "FM-1 firmware, USB, audio and Doom workflows"
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "fm1-local",
+  "interface": { "displayName": "FM-1 Firmware" },
+  "plugins": [
+    {
+      "name": "fm1-mod-fw",
+      "source": { "source": "local", "path": "./plugins/fm1-mod-fw" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}
