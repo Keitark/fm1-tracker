@@ -113,5 +113,18 @@ unclipped output; exact sample-rate duration bounds; shortening as pitch rises;
 unchanged song bytes/dirty state; and audition while the song continues playing.
 The main preview uses the existing stereo host renderer.
 
+Listening copies and the MOD are saved under `private-media/buddha/`. Those
+WAV copies use one constant gain per file to bring peak level to 28,000/32,767;
+the unmodified engine WAVs remain under `build/buddha/`. `audio-audit.json`
+records durations, peaks, listening gain and both WAV hashes. This gain does
+not change the MOD, notes, phrase speed, or firmware mixer. Cached voice inputs
+are preserved alongside the listening copies.
+
+First host validation: MOD 151,752 bytes; full arrangement 1,693,439 frames at
+44.1 kHz (38.39998 seconds); engine peak 5,440. Keyboard phrase lengths were
+9.6015 / 7.6045 / 6.3942 seconds at MIDI 48 / 52 / 55; all harness assertions
+passed. Cached regeneration produced identical MOD SHA256
+`2b9883b384bdfd2516057b76e56200646004381a850c2c2b93098656ca6264cf`.
+
 Evidence level: **host validation**. No candidate firmware packaging, device
 upload, flashing, physical key test, or audible hardware acceptance was done.
