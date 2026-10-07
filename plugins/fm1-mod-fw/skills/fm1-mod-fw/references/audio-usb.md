@@ -1,11 +1,20 @@
 # Runtime audio, ADC and USB findings
 
-Current checkpoint (2026-10-07): Doom `3cf7f681...` is installed and
-full-readback verified. The user accepts PCM and master volume. The missing
-cold-boot USB interfaces were traced to the programmer cable; switching to a
-normal USB data cable restored healthy COM5 and UAC with stage4/fault0 and
-zero LCD/key errors. No further firmware fix was proved necessary. Host music
-PCM remains exact and unclipped; this is distinct from physical output timing.
+Installed checkpoint (2026-10-07): Doom source `626d2612`, app `70553874...`
+(565,744 B), is full-readback verified as image `a4c3fc49...`. COM4 observation
+reached stage4/fault0 with advancing game/audio, zero LCD/key errors and default
+synth editor values. Earlier images established PCM/music and master volume.
+Physical editing and sustained output timing acceptance remain open. The
+missing cold-boot USB was traced to the programmer cable; a normal USB data
+cable restored application CDC/UAC. No firmware cold-startup defect was proved.
+
+Source checkpoint (2026-10-08): Doom `783a03d` and shared board `2a577e8`
+implement the NES filter/Wah bank. Host/target gates and independent code audit
+pass, but it has **not been flashed**. Candidate app `4f3871be...` is 567,344 B;
+do not confuse its new controls with the installed single-bank
+editor. Full hashes and dated evidence are in the Doom checkout's `AUDIO.md`
+and `TARGET_CANDIDATE.md`. A prior host result or valid ELF does not establish
+physical sound, encoder polarity, streaming or callback deadline acceptance.
 
 ## Live sound editor source contract
 
@@ -17,31 +26,74 @@ Copy counts to the task, release the input lock, then take the audio lock to
 apply DSP controls. Never nest scanner and audio locks. On scanner recovery,
 invalidate the previous contact state but retain accumulated counts.
 
-| Encoder ID | Panel label | A/B matrix contacts | Doom live editor |
-| ---: | --- | --- | --- |
-| 0 | SELECT | 0x10 / 0x20 | Unassigned |
-| 1 | ALGORITHM | 0x30 / 0x40 | Classic / Triangle / Pulse / Mixed band-pass |
-| 2 | KNOB1 | 0x91 / 0xa1 | VCO detune |
-| 3 | KNOB2 | 0x90 / 0xa0 | VCF cutoff |
-| 4 | KNOB3 | 0x70 / 0x80 | VCA attack/release contour |
-| 5 | KNOB4 | 0x50 / 0x60 | Reverb wet mix |
-| 6 | PRESETS | 0x15 / 0x25 | Original / Warm / Acid / Room |
+| Encoder ID | Panel label | A/B matrix contacts | Synth bank0 | NES FX bank1 |
+| ---: | --- | --- | --- | --- |
+| 0 | SELECT | 0x10 / 0x20 | Four net edges toggle retained Synth/NES FX banks | Same |
+| 1 | ALGORITHM | 0x30 / 0x40 | Classic / Triangle / Pulse / Mixed band-pass | Bypass / LP / BP / HP |
+| 2 | KNOB1 | 0x91 / 0xa1 | VCO detune | Cutoff, logarithmic 80–5,000 Hz |
+| 3 | KNOB2 | 0x90 / 0xa0 | VCF cutoff | Resonance |
+| 4 | KNOB3 | 0x70 / 0x80 | VCA attack/release contour | LFO rate, 0.1–12.8 Hz |
+| 5 | KNOB4 | 0x50 / 0x60 | Reverb wet mix | LFO depth |
+| 6 | PRESETS | 0x15 / 0x25 | Original / Warm / Acid / Room | Dry / Warm / SlowWah / AcidSweep |
 
 Matrix high nibble is row, low nibble column, active-low. Selectors use four
 net contact edges per detent; knobs use one bounded parameter step per edge.
 The task consumes at most eight edges per control per poll and retains backlog.
 Do not invent encoder push actions or claim clockwise polarity before bench
-verification. Boot controls are preset0/algorithm0, knobs16/72/32/0. Original
-OPL is the default. E4 toggles the synth; editing the same preset preserves
-that explicit mode. Selecting a new preset changes the mode.
+verification. Synth selectors wrap; NES preset/algorithm selectors clamp.
+Boot uses Synth bank, preset0/algorithm0, knobs16/72/32/0, Original OPL and
+NES FX bypassed. SELECT preserves the OPL/synth source; E4 remains the source
+toggle. Selecting a different Synth preset changes that source as before;
+editing its same preset or selecting a NES preset preserves the source.
+Returning to Synth bypasses NES FX while retaining both banks' values.
+
+NES FX uses the shared recipes exactly (raw knob values):
+
+| Preset | Mode | Cutoff | Resonance | Rate | Depth | Mix |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Dry | Bypass (0) | 112 | 0 | 19 | 0 | 127 |
+| Warm | LP (1) | 92 | 24 | 9 | 0 | 127 |
+| SlowWah | LP (1) | 76 | 60 | 9 | 72 | 127 |
+| AcidSweep | BP (2) | 84 | 100 | 29 | 96 | 100 |
+
+Process complete mono music, including OPL drums, through NES FX before
+independent PCM effects and master gain. Retain the -8192..8191 music headroom;
+filter edits must not change the PCM gunshot path or bypass PB6/ADC4 volume.
+The new state is 36 B plus 9 B controls; it requires no additional audio queue
+or sample buffer. The existing 2 KiB synth room delay is unchanged.
+
+Reuse `fm1_nes_fx`'s prepared API: calculate the LFO phase increment, including
+64-bit division, in the task setter. Call prepared render from the IRQ; this
+filter path uses exact signed 32-bit split products without 64-bit arithmetic,
+allocation, I/O or waits. Preserve exact signed truncation rather than
+approximating the filter products. Formal shared tests cover 226,084 samples against a 64-bit reference,
+all 128 rates, stale preparation rejection and prepared/in-place/partition/
+single-sample paths. Prepared-render target IR uses only 32-bit arithmetic.
 
 Reverb processes synth melody only, before the unchanged OPL percussion stem.
 It uses 1,024 PCM16 samples partitioned from the existing Doom zone, bounded
 feedback, a decimated delay and interpolated output. Control and waveform
 changes smooth once per 64-frame audio block. `DOOM EDIT` reads the published
-packed control snapshot without taking an audio lock in USB. All 13 native
-contracts, including exact 4,233,600-frame OPL output, pass. Live knob polarity,
-DSP timing and physical sound acceptance await flashing and bench checks.
+packed control snapshot without taking an audio lock in USB: bank0 exposes
+VCO/VCF/VCA/reverb, bank1 cutoff/resonance/rate/depth; `synth_mode` remains
+independent of bank. All 13 native contracts, including exact 4,233,600-frame
+OPL output, pass with default NES bypass. The unflashed target fits its slot
+with 17,612 B remaining, static RAM479,208 B, linker heap44,332 B and reviewed
+startup reserve4,320 B. USB diagnostic chain1,480 B plus1,024 B SDK margin fits
+the2,560 B stack with56 B remaining. Candidate/stack Python checks pass18/18;
+offline request/model validation preserves boot/config/tail with139 sectors
+and directory last. These results establish no new device write/readback.
+Live knob polarity, DSP deadlines and physical sound acceptance still require
+bench checks.
+
+For incremental Doom builds, verify private archive/bank hashes against the
+last accepted manifest. The retained accepted archive is
+`build/fine-assets/audio-door-fixed.fmd`, 170,636 B, SHA-256
+`197d7ccfc475893a6a5b581ea63c51003c524aaa4c38096de370329f2fd2fe7f`.
+The retained manifest is private `build/live-edit-target.log`. An existing
+`build/menu-ui-4k.fmd` was an older 117,590 B 8×8 archive; its default filename
+does not establish the accepted asset profile. The corrected candidate's
+archive, sound/music/OPL banks and 442 source hashes match their reviewed closure.
 
 ## Verified shared board paths
 
