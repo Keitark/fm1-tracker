@@ -6,12 +6,18 @@
    Background: earlevel.com/main/2003/03/02/the-digital-state-variable-filter/
    No floating point, transcendental calls or per-sample division by a variable.
    Q8 states retain low-level detail; bounded +/-8388352 (32767*256).
-   Products use signed64; sums fit signed32. No signed shifts/overflow. */
+   Split Q12 products and sums fit signed32. No signed shifts/overflow. */
 static const uint16_t frequency_table[128]={47,48,50,51,53,55,57,59,61,63,65,67,69,71,74,76,79,81,84,87,90,92,96,99,102,105,109,112,116,120,124,128,132,137,141,146,151,156,161,166,172,177,183,189,196,202,209,216,223,230,238,246,254,262,271,280,289,299,308,319,329,340,351,363,375,387,400,413,427,441,456,471,486,503,519,536,554,572,591,611,631,652,673,696,719,742,767,792,818,845,873,902,932,962,994,1027,1060,1095,1131,1169,1207,1247,1287,1330,1373,1418,1465,1513,1562,1613,1666,1720,1776,1834,1894,1955,2018,2084,2151,2221,2292,2366,2442,2520,2601,2683,2769,2857};
 static unsigned bound(int n,unsigned max) {return n<0?0:(unsigned)n>max?max:(unsigned)n;}
 static int32_t smooth(int32_t current,int32_t target) {
     int32_t d=target-current;
     return current+(d/64 ? d/64 : (d>0 ? 1 : d<0 ? -1 : 0));
+}
+static int32_t mul_q12(int32_t coefficient,int32_t state) {
+    /* Exact signed truncation of coefficient*state/4096 without64-bit work.
+       coefficient<=7373, |state|<=8388352: quotient product<=15092531,
+       remainder product<=30192435. Both portions have state's sign. */
+    return coefficient*(state/4096)+(coefficient*(state%4096))/4096;
 }
 static int32_t limit(fm1_fx_state *s,int32_t v) {
     if(v>8388352){++s->limited;return 8388352;}
@@ -51,15 +57,23 @@ void fm1_fx_control_edges(fm1_fx_controls *c,unsigned id,int32_t edges) {
 void fm1_fx_reset(fm1_fx_state *s) {
     memset(s,0,sizeof(*s));s->frequency=frequency_table[112];s->damping=7373;s->rate_cache=255;
 }
-int fm1_fx_process(fm1_fx_state *s,const fm1_fx_controls *c,const int16_t *in,int16_t *out,size_t n) {
-    size_t i;int target_wet;
-    if(!s || !c || (!in && n) || (!out && n) || n>64 || c->mode>3 ||
-       c->cutoff>127 || c->resonance>127 || c->rate>127 || c->depth>127 || c->mix>127)return -1;
+static int controls_valid(const fm1_fx_controls *c) {
+    return c && c->mode<=3 && c->cutoff<=127 && c->resonance<=127 &&
+        c->rate<=127 && c->depth<=127 && c->mix<=127;
+}
+int fm1_fx_prepare(fm1_fx_state *s,const fm1_fx_controls *c) {
+    if(!s || !controls_valid(c))return -1;
     if(s->rate_cache!=c->rate) {
         /* 0.1..12.8Hz in0.1Hz steps, computed only when rate changes. */
         s->phase_increment=(uint32_t)(((uint64_t)(c->rate+1u)*10u<<32)/4410000u);
         s->rate_cache=c->rate;
     }
+    return 0;
+}
+int fm1_fx_process_prepared(fm1_fx_state *s,const fm1_fx_controls *c,const int16_t *in,int16_t *out,size_t n) {
+    size_t i;int target_wet;
+    if(!s || !controls_valid(c) || (!in && n) || (!out && n) || n>64 ||
+       s->rate_cache!=c->rate)return -1;
     target_wet=c->mode?(c->mix*256+63)/127:0;
     if(!target_wet && !s->wet) {
         /* Exact bypass fast path, including phase continuity across blocks. */
@@ -80,11 +94,17 @@ int fm1_fx_process(fm1_fx_state *s,const fm1_fx_controls *c,const int16_t *in,in
         index=(int32_t)bound(index,127);
         s->frequency=smooth(s->frequency,frequency_table[index]);
         s->damping=smooth(s->damping,7373-(int32_t)c->resonance*50); /* 1/Q:1.8..0.25 */
-        s->low=limit(s,s->low+(int32_t)(((int64_t)s->frequency*s->band)/4096));
-        high=limit(s,dry*256-s->low-(int32_t)(((int64_t)s->damping*s->band)/4096));
-        s->band=limit(s,s->band+(int32_t)(((int64_t)s->frequency*high)/4096));
+        s->low=limit(s,s->low+mul_q12(s->frequency,s->band));
+        high=limit(s,dry*256-s->low-mul_q12(s->damping,s->band));
+        s->band=limit(s,s->band+mul_q12(s->frequency,high));
         filtered=(s->mode==FM1_FX_LP?s->low:s->mode==FM1_FX_BP?s->band:high)/256;
         out[i]=(int16_t)(dry+((filtered-dry)*s->wet)/256);
     }
     return 0;
+}
+int fm1_fx_process(fm1_fx_state *s,const fm1_fx_controls *c,const int16_t *in,int16_t *out,size_t n) {
+    /* Validate the entire call before preparation can mutate the rate cache. */
+    if(!s || !controls_valid(c) || (!in && n) || (!out && n) || n>64)return -1;
+    if(fm1_fx_prepare(s,c))return -1;
+    return fm1_fx_process_prepared(s,c,in,out,n);
 }
