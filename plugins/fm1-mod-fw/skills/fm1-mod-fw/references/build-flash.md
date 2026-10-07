@@ -31,6 +31,22 @@ Use explicit script/build paths belonging to the chosen application. The board's
 
 Use the generated request path for `plan`, inspect the exact changed-sector plan, then issue the authorized `flash`. Reuse an idle verified session when suitable. Do not edit protected state to clear a failed write/reset/observation latch. Supported `retry_flash` is limited to a completed failed flash with exactly the same candidate, baseline, sector list and recorded PnP identity; pending termination, reset failures and changed candidates are rejected. A new session seeded with an old image does not establish current NOR contents after a partial write: resolve the actual state through the supported recovery first. Never turn an ambiguous failure into a blind erase/write/reset retry.
 
+### Recovery after a connection identity changes
+
+For a completed failed flash whose USB port change produces a different PnP identity, use explicit `recover_flash` with the original generated request. Ordinary `retry_flash` still requires the recorded PnP identity. If the old protected writer snapshot lacks `recover_flash`, migrate its failure evidence into a current snapshot:
+
+```powershell
+& F:/dev/fm1/tools/jieli-wl82/start-flash-session.ps1 -TrustedLocal -ResumeFailedSession '<failed-session>'
+& F:/dev/fm1/tools/jieli-wl82/flash-session-client.ps1 -SessionRoot '<new-session>' -Operation status
+& F:/dev/fm1/tools/jieli-wl82/flash-session-client.ps1 -SessionRoot '<new-session>' -Operation recover_flash -RequestFile '<original-request>'
+```
+
+Migration preserves the original verified baseline, exact candidate and sector scope, failed-write evidence and blocked latch; it performs no device I/O. `-TrustedLocal` uses the existing Python environment under elevation. Inspect the new session before recovery; do not replace its baseline with a partial flash dump or edit protected state.
+
+Before any erase/program operation, recovery loads the pinned RAM helper and reads the entire current 1 MiB flash. The read must match the failed receipt: verified sectors equal the candidate, only the next uncertain sector may have partially programmed application bytes, and every other sector equals the original baseline. Boot/config/reserved spans, including bytes sharing application erase sectors, must still match the baseline. The selected target's disk and PnP identity stay pinned throughout the operation.
+
+After that check, the writer rewrites the original sector scope, application directory last, verifies every written sector and compares a complete final read with the exact candidate. A helper/read/check failure retains the original failed attempt and blocked latch, with the rejected recovery preflight recorded separately. There are no automatic write retries or resets. Do not boot a partially written application; reset once only after complete verification succeeds.
+
 Reset once, then observe serial HELLO plus advancing engine/frame counters. A command return or successful readback does not prove boot, display, controls or sound. Power cycle when the known UBOOT transition requires it or the user reports failed startup; re-enumerate rather than resetting repeatedly.
 
 ## Windows enumeration

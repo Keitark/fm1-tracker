@@ -38,8 +38,8 @@ def require(test, message):
 def schema(request):
     require(type(request) is dict, 'Object required')
     op = request.get('op')
-    require(op in ('status', 'environment', 'plan', 'flash', 'retry_flash', 'reset', 'observe', 'enter_uboot'), 'Unknown operation')
-    fields = {'op', 'image', 'sha256', 'baseline_sha256'} if op in ('plan', 'flash', 'retry_flash') else {'op'}
+    require(op in ('status', 'environment', 'plan', 'flash', 'retry_flash', 'recover_flash', 'reset', 'observe', 'enter_uboot'), 'Unknown operation')
+    fields = {'op', 'image', 'sha256', 'baseline_sha256'} if op in ('plan', 'flash', 'retry_flash', 'recover_flash') else {'op'}
     require(set(request) == fields, 'Unexpected or missing request fields')
     return op
 
@@ -59,6 +59,49 @@ def candidate(request, baseline):
         require(image[start:end] == baseline[start:end],
                 'Candidate changes boot/config/reserved bytes outside the stock application; no device I/O')
     return image, changed[1:] + [0x4000]
+
+
+def recovery_receipt(baseline, image, sectors, receipt):
+    # Keep the original scope even when NOR already contains candidate bytes.
+    # An interrupted read must never become the verified baseline.
+    _, expected = candidate(dict(op='plan', image=base64.b64encode(image).decode(),
+                                 sha256=sha(image), baseline_sha256=sha(baseline)), baseline)
+    require(sectors == expected, 'Recovery sector scope differs from the failed candidate')
+    require(receipt.get('status') == 'failed' and
+            receipt.get('baseline_sha256') == sha(baseline) and
+            receipt.get('candidate_sha256') == sha(image), 'Recovery receipt identity/status mismatch')
+    verified = receipt.get('verified_sectors')
+    require(type(verified) is list and len(verified) <= len(sectors) and
+            verified == [hex(a) for a in sectors[:len(verified)]],
+            'Recovery verified sectors are not the original ordered prefix')
+    current = sectors[len(verified)] if len(verified) < len(sectors) else sectors[-1]
+    require(receipt.get('current_sector') == hex(current), 'Recovery current sector is not next')
+    return len(verified), current
+
+
+def verify_recovery_read(baseline, image, sectors, receipt, current):
+    prefix, uncertain = recovery_receipt(baseline, image, sectors, receipt)
+    require(len(current) == SIZE, 'Recovery read is not the complete flash array')
+    for start, end in ((0, 0x4000), (0x4040, APP_START), (APP_END, SIZE)):
+        require(current[start:end] == baseline[start:end],
+                'Recovery device boot/config/reserved bytes differ from the verified baseline')
+    if prefix == len(sectors):
+        require(current == image, 'Recovery completed-prefix read differs from the candidate')
+    else:
+        verified = set(sectors[:prefix])
+        for address in range(0, SIZE, 4096):
+            actual = current[address:address + 4096]
+            if address in verified:
+                require(actual == image[address:address + 4096],
+                        'Recovery verified sector differs from the candidate')
+            elif address != uncertain:
+                require(actual == baseline[address:address + 4096],
+                        'Recovery untouched sector differs from the baseline')
+            # Only the next unverified erase sector may be partly programmed;
+            # protected bytes sharing that sector were checked above.
+    return dict(current_sha256=sha(current), verified_prefix_sectors=prefix,
+                uncertain_sector=hex(uncertain), complete_flash_read=True,
+                protected_bytes_match=True)
 
 
 def resume_failed_session(root):
@@ -87,7 +130,7 @@ def resume_failed_session(root):
     matches = []
     for path in sorted((root / 'ipc').glob('*.json')):
         req = json.loads(path.read_text(encoding='utf-8-sig'))
-        if req.get('op') in ('flash', 'retry_flash') and req.get('sha256') == receipt['candidate_sha256']:
+        if req.get('op') in ('flash', 'retry_flash', 'recover_flash') and req.get('sha256') == receipt['candidate_sha256']:
             image, sectors = candidate(req, base)
             matches.append((path, image, sectors))
     require(matches, 'Failed candidate request missing from protected history')
@@ -406,25 +449,31 @@ class Session:
             return dict(self.state)
         if op == 'environment':
             return environment_info()
-        if op in ('plan', 'flash', 'retry_flash'):
+        if op in ('plan', 'flash', 'retry_flash', 'recover_flash'):
             base = (self.root / self.state['baseline_file']).read_bytes()
             require(sha(base) == self.state['baseline_sha256'], 'Stored baseline damaged')
             image, sectors = candidate(request, base)
             if op == 'plan':
                 return {'sha256': sha(image), 'sectors': [hex(x) for x in sectors],
                         'device_io': False, 'blocked': self.state['blocked']}
-        retry = self.state.get('flash_attempt') if op == 'retry_flash' else None
-        if op == 'retry_flash':
+        retry = self.state.get('flash_attempt') if op in ('retry_flash', 'recover_flash') else None
+        if op in ('retry_flash', 'recover_flash'):
             require(self.state['blocked'] and self.state.get('failed_operation') == 'flash'
                     and retry and retry.get('status') == 'failed' and retry.get('target'),
                     'Explicit retry requires a completed failed flash with a recorded target')
             require(retry['sha256'] == sha(image) and retry['baseline_sha256'] == sha(base)
                     and retry['sectors'] == sectors, 'Retry must use the exact failed candidate and original sector scope')
-        require(not self.state['blocked'] or op in ('observe', 'retry_flash'),
+        recovery = None
+        if op == 'recover_flash':
+            source_run = (self.root / retry['run']).resolve()
+            require(source_run.is_relative_to(self.root.resolve()), 'Recovery failure evidence outside session')
+            recovery = json.loads((source_run / 'deployment.json').read_text(encoding='utf-8-sig'))
+            recovery_receipt(base, image, sectors, recovery)
+        require(not self.state['blocked'] or op in ('observe', 'retry_flash', 'recover_flash'),
                 'Session latched after failure; inspect logs and use explicit retry_flash for the same failed image.')
         if op == 'reset':
             require(self.state.get('reset_pending'), 'Reset requires a successful verified flash in this session')
-        if op in ('flash', 'retry_flash'):
+        if op in ('flash', 'retry_flash', 'recover_flash'):
             require(not self.state.get('reset_pending') and not self.state.get('needs_observation'),
                     'Previous verified image has not completed reset/observation')
         run = self.root / 'runs' / uuid.uuid4().hex
@@ -436,12 +485,13 @@ class Session:
         previous_operation = self.state.get('failed_operation')
         self.state['blocked'] = True
         self.save()
+        deployment_started = False
         try:
-            if op in ('flash', 'retry_flash'):
+            if op in ('flash', 'retry_flash', 'recover_flash'):
                 target = disk()
                 # A replug can change PHYSICALDRIVE numbering; require the same
                 # recorded PNP identity, then pin both values for this attempt.
-                if retry:
+                if retry and op == 'retry_flash':
                     require(target['PNPDeviceID'] == retry['target']['PNPDeviceID'], 'Retry target identity changed')
                 attempt = dict(status='pending', run=str(run.relative_to(self.root)),
                     sha256=sha(image), baseline_sha256=sha(base), sectors=sectors, target=target,
@@ -454,12 +504,26 @@ class Session:
                 require(sha(helper.read_bytes()) == HELPER_SHA, 'Helper hash mismatch')
                 execute_cli(target['DeviceID'], ['help'], run / 'helper.log', 'load')
                 require(disk() == target, 'USB identity changed after helper upload')
+                if op == 'recover_flash':
+                    current_path = run / 'current.bin'
+                    execute_cli(target['DeviceID'], [f'read 0 {SIZE} {current_path}'], run / 'current.log')
+                    require(disk() == target, 'USB identity changed during recovery read')
+                    proof = verify_recovery_read(base, image, sectors, recovery, current_path.read_bytes())
+                    proof.update(previous_target=retry['target'], target=target,
+                                 source_failed_run=retry['run'])
+                    (run / 'recovery-read.json').write_text(json.dumps(proof, indent=2), encoding='utf-8')
+                    attempt['recovery_read'] = proof
+                    (run / 'attempt.json').write_text(json.dumps(attempt, indent=2), encoding='utf-8')
+                    self.save()
                 import deploy_v14_smb1_via_cli as writer
                 def call(device, commands, log):
                     require(disk() == target, 'USB identity changed during write/verify')
                     execute_cli(device, commands, log)
-                # All writes, sector erase/readback, directory-last and final reads
-                # remain the existing implementation. No pre-write device dump.
+                    require(disk() == target, 'USB identity changed after write/verify')
+                # Recovery validates a fresh dump against the interrupted write.
+                # All operations retain the original baseline and sector scope;
+                # erase/readback, directory-last and final verification are unchanged.
+                deployment_started = True
                 result = writer.deploy(target['DeviceID'], run, base, image, call=call,
                     sectors=sectors, verified_preflight=self.root / self.state['baseline_file'], nes_cdc=True)
                 require(result['status'] == 'written_and_readback_verified' and result['full_readback_count'] == 1,
@@ -495,12 +559,18 @@ class Session:
             self.save()
             return {'result': result, 'log_directory': str(run)}
         except Exception as error:
-            if op in ('flash', 'retry_flash'):
+            if op in ('flash', 'retry_flash', 'recover_flash'):
                 self.state['failed_operation'] = 'flash'
                 attempt = self.state.get('flash_attempt')
                 if attempt and attempt['run'] == str(run.relative_to(self.root)):
                     attempt['status'] = 'failed'
                     (run / 'attempt.json').write_text(json.dumps(attempt, indent=2), encoding='utf-8')
+                    if op == 'recover_flash' and not deployment_started:
+                        # No NOR write was attempted. Retain the original
+                        # failure evidence and this rejected preflight separately.
+                        self.state['recovery_preflight_attempt'] = attempt
+                        self.state['flash_attempt'] = retry
+                        self.state['target'] = retry['target']
                 (run / 'failure.json').write_text(json.dumps({'error': f'{type(error).__name__}: {error}',
                     'operation': op, 'retry_of': retry['run'] if retry else None}), encoding='utf-8')
             # Preserve the original flash failure across later observation errors.
