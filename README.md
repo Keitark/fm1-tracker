@@ -40,3 +40,15 @@ and the classic MOD library are local dependencies excluded from Git. Their
 paths and upstream references are documented in the component READMEs and
 hardware research. The original starter bank can be regenerated with
 `python firmware/protracker/samples/make_starter_bank.py`.
+
+## Codex firmware skills
+
+The local [FM-1 Mod Firmware plugin](plugins/fm1-mod-fw/plugin.json) preserves
+verified build/flash, ADC/audio/USB and original Doom asset findings. Its skills
+are [fm1-mod-fw](plugins/fm1-mod-fw/skills/fm1-mod-fw/SKILL.md) and
+[fm1-port-doom](plugins/fm1-mod-fw/skills/fm1-port-doom/SKILL.md).
+
+Register this checkout and install with `codex plugin marketplace add <repo-path>`
+then `codex plugin add fm1-mod-fw@fm1-local`. Restart Codex after installation
+when needed for skill discovery. The plugin contains source guidance; firmware,
+game assets and device receipts remain private build inputs.

@@ -18,7 +18,16 @@ void fm1_fx_controls_reset(fm1_fx_controls *);
    ALGORITHM/PRESETS use four net edges per choice; other knobs one per step. */
 void fm1_fx_control_edges(fm1_fx_controls *,unsigned encoder,int32_t edges);
 void fm1_fx_reset(fm1_fx_state *);
-/* Task-only, no locks, I/O, allocation or waits. Up to64 mono PCM16 frames,
+/* Task-only preparation. Validates controls and caches the LFO increment;
+   does not advance the filter or phase. Invalid controls leave state unchanged.
+   Caller owns serialization with rendering. */
+int fm1_fx_prepare(fm1_fx_state *,const fm1_fx_controls *);
+/* Prepared render, no locks, I/O, allocation or waits, and no64-bit arithmetic.
+   Up to64 mono PCM16 frames, in-place and zero-length allowed. Fixed44100Hz.
+   Rate must match the last preparation; invalid input or a stale rate leaves
+   state and output unchanged. Caller owns task/IRQ serialization. */
+int fm1_fx_process_prepared(fm1_fx_state *,const fm1_fx_controls *,const int16_t *,int16_t *,size_t);
+/* Task-only convenience API, no locks, I/O, allocation or waits. Up to64 mono PCM16 frames,
    in-place allowed. Each control is0..127; mode0..3. Fixed44100Hz processing.
    Call once before queue-push retries, never once per retry. */
 int fm1_fx_process(fm1_fx_state *,const fm1_fx_controls *,const int16_t *,int16_t *,size_t);

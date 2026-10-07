@@ -1,14 +1,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$SessionRoot,
-    [ValidateSet('status','environment','plan','flash','retry_flash','reset','observe','enter_uboot','quit')][string]$Operation = 'status',
+    [ValidateSet('status','environment','plan','flash','retry_flash','recover_flash','reset','observe','enter_uboot','quit')][string]$Operation = 'status',
     [string]$RequestFile
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $config = Get-Content -LiteralPath "$SessionRoot\session.json" -Raw | ConvertFrom-Json
 if (Test-Path -LiteralPath "$SessionRoot\stopped.txt") { throw 'Session has stopped; do not retry a previous flash blindly.' }
-if ($Operation -in @('plan','flash','retry_flash')) {
+if ($Operation -in @('plan','flash','retry_flash','recover_flash')) {
     if (-not $RequestFile) { throw 'A locally validated request file is required' }
     $request = Get-Content -LiteralPath $RequestFile -Raw | ConvertFrom-Json
     if ($request.op -ne 'plan') { throw 'Input must be an offline plan request' }

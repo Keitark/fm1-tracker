@@ -1,0 +1,4 @@
+interface:
+  display_name: "FM-1 Doom Port"
+  short_description: "Debug compressed Doom assets and rendering"
+  default_prompt: "Use $fm1-port-doom to investigate the current Doom engine or asset problem and validate a focused fix."
