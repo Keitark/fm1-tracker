@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.20)
+project(fm1_buddha_phrase_preview C)
+add_executable(phrase_preview phrase_preview.c ../../mod.c)
+target_include_directories(phrase_preview PRIVATE ../..)
+target_compile_features(phrase_preview PRIVATE c_std_11)
