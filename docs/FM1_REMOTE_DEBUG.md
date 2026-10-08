@@ -391,8 +391,8 @@ status/catalog and exact hashes for all five variants. Every variant remained
 unwritable without a protected session. Safe enumeration detected the FM-1 CDC
 interface; no serial or USB operation was submitted. Sanitized evidence remains
 in `tmp/laptop-https-evidence-20261008.json`; credentials are outside the repo.
-The laptop still needs `C:\Python311`, a fresh protected snapshot and a locally
-established same-device baseline before hardware acceptance can begin.
+At that first inventory verification, the laptop still needed `C:\Python311`
+and a fresh protected snapshot with the locally established same-device baseline.
 
 The later private RayForce variant contains one song, `PENETRATION (ROUND 1)`,
 with its exact matching PDX bank. It passed fresh target linking, the complete
@@ -407,3 +407,11 @@ replay passed without missing samples or player/LCD/USB errors. The private JSON
 and sanitized evidence were transferred over Taildrop for local catalog import.
 No hardware operation was performed during this package work. The stock demo
 and RayForce are distinct immutable catalog variants; select the desired one.
+
+The receiving session subsequently prepared the protected runtime and a fresh
+laptop snapshot using the same verified baseline, with the user's confirmation
+that it is the same physical FM-1 with no later firmware changes. The PC's
+authenticated HTTPS metadata check confirmed the imported RayForce ID/hash,
+an idle unblocked session and all six variants matching the preserved regions.
+This confirms catalog preparation and session configuration, not physical
+playback or a new full-flash hash. No device operation was submitted by the PC.
