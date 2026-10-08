@@ -52,3 +52,11 @@ Register this checkout and install with `codex plugin marketplace add <repo-path
 then `codex plugin add fm1-mod-fw@fm1-local`. Restart Codex after installation
 when needed for skill discovery. The plugin contains source guidance; firmware,
 game assets and device receipts remain private build inputs.
+
+## Remote laptop debugging
+
+[FM-1 remote debug and the private app store](docs/FM1_REMOTE_DEBUG.md) connects
+this PC to a USB-attached Windows laptop through Tailscale HTTPS. It provides
+authenticated status, durable firmware read/write jobs and reviewed packaged
+app/ROM variants through the existing protected flashing workflow. Laptop setup
+and physical acceptance remain separate from the offline implementation tests.

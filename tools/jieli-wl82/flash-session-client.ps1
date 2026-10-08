@@ -1,11 +1,15 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$SessionRoot,
-    [ValidateSet('status','environment','plan','flash','retry_flash','recover_flash','reset','observe','enter_uboot','quit')][string]$Operation = 'status',
-    [string]$RequestFile
+    [ValidateSet('status','environment','plan','flash','retry_flash','recover_flash','reset','observe','serial_status','enter_uboot','read_firmware','quit')][string]$Operation = 'status',
+    [string]$RequestFile,
+    [ValidateSet('cold','reuse')][string]$LoaderState
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($Operation -eq 'read_firmware') {
+    if (-not $LoaderState) { throw 'read_firmware requires explicit -LoaderState cold or reuse from session history' }
+} elseif ($PSBoundParameters.ContainsKey('LoaderState')) { throw 'LoaderState is allowed only with read_firmware' }
 $config = Get-Content -LiteralPath "$SessionRoot\session.json" -Raw | ConvertFrom-Json
 if (Test-Path -LiteralPath "$SessionRoot\stopped.txt") { throw 'Session has stopped; do not retry a previous flash blindly.' }
 if ($Operation -in @('plan','flash','retry_flash','recover_flash')) {
@@ -16,6 +20,7 @@ if ($Operation -in @('plan','flash','retry_flash','recover_flash')) {
 } else {
     if ($RequestFile) { throw 'This operation takes no request file' }
     $request = @{op=$Operation}
+    if ($Operation -eq 'read_firmware') { $request.loader_state = $LoaderState }
 }
 $payload = [Text.Encoding]::UTF8.GetBytes(($request | ConvertTo-Json -Compress))
 if ($payload.Length -gt 1500000) { throw 'Request too large' }

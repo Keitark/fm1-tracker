@@ -8,11 +8,13 @@ import base64
 import hashlib
 import importlib
 import json
+import queue
 from pathlib import Path
 import re
 import runpy
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -38,9 +40,17 @@ def require(test, message):
 def schema(request):
     require(type(request) is dict, 'Object required')
     op = request.get('op')
-    require(op in ('status', 'environment', 'plan', 'flash', 'retry_flash', 'recover_flash', 'reset', 'observe', 'enter_uboot'), 'Unknown operation')
-    fields = {'op', 'image', 'sha256', 'baseline_sha256'} if op in ('plan', 'flash', 'retry_flash', 'recover_flash') else {'op'}
+    require(op in ('status', 'environment', 'plan', 'flash', 'retry_flash', 'recover_flash', 'reset', 'observe', 'serial_status', 'enter_uboot', 'read_firmware'), 'Unknown operation')
+    if op in ('plan', 'flash', 'retry_flash', 'recover_flash'):
+        fields = {'op', 'image', 'sha256', 'baseline_sha256'}
+    elif op == 'read_firmware':
+        fields = {'op', 'loader_state'}
+    else:
+        fields = {'op'}
     require(set(request) == fields, 'Unexpected or missing request fields')
+    if op == 'read_firmware':
+        require(type(request['loader_state']) is str and request['loader_state'] in ('cold', 'reuse'),
+                'Explicit cold or reuse loader state required')
     return op
 
 
@@ -167,12 +177,133 @@ def ps_json(script):
     return json.loads(result.stdout) if result.stdout.strip() else []
 
 
+INVENTORY_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+while ($null -ne ($line = [Console]::ReadLine())) {
+    if ($line -notmatch '^[1-9][0-9]{0,8}$') { exit 2 }
+    $sequence = [int]$line
+    try {
+        $items = @(Get-CimInstance Win32_DiskDrive -ErrorAction Stop |
+            Where-Object {$_.Model -eq 'WL82 UBOOT1.00 USB Device'} |
+            Select-Object DeviceID,PNPDeviceID)
+        $reply = @{id=$sequence; ok=$true; items=$items}
+    } catch {
+        $reply = @{id=$sequence; ok=$false; error='Windows disk inventory failed'}
+    }
+    [Console]::WriteLine(($reply | ConvertTo-Json -Depth 4 -Compress))
+    [Console]::Out.Flush()
+}
+"""
+
+
+class DiskInventory:
+    """One hidden process; every query obtains fresh Windows device metadata.
+
+    No cached identities, command input, automatic restart, or fallback. A lost
+    or invalid response fails the operation and retains its existing latch.
+    """
+    def __init__(self, timeout=15):
+        self.timeout = timeout
+        self.process = None
+        self.sequence = 0
+        self.lock = threading.Lock()
+        self.closed = False
+        self.reader = None
+
+    def query(self):
+        with self.lock:
+            require(not self.closed, 'Disk inventory process is closed')
+            try:
+                if self.process is None:
+                    self.process = subprocess.Popen(
+                        [PS, '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', INVENTORY_SCRIPT],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                        text=True, encoding='utf-8', errors='strict', bufsize=1,
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                require(self.process.poll() is None, 'Disk inventory process exited')
+                self.sequence += 1
+                require(self.sequence <= 999999999, 'Disk inventory request limit exceeded')
+                self.process.stdin.write(str(self.sequence) + '\n')
+                self.process.stdin.flush()
+                result = queue.Queue(maxsize=1)
+                def read_response():
+                    try:
+                        result.put((True, self.process.stdout.readline(65537)))
+                    except Exception as error:
+                        result.put((False, error))
+                reader = threading.Thread(target=read_response, daemon=True)
+                self.reader = reader
+                reader.start()
+                try:
+                    success, line = result.get(timeout=self.timeout)
+                except queue.Empty:
+                    raise TimeoutError('Windows disk inventory timed out') from None
+                if not success:
+                    raise line
+                require(line.endswith('\n') and len(line) <= 65536,
+                        'Disk inventory response missing or too large')
+                reply = json.loads(line)
+                require(type(reply) is dict and type(reply.get('id')) is int
+                        and reply['id'] == self.sequence and type(reply.get('ok')) is bool,
+                        'Invalid disk inventory response')
+                require(reply['ok'], 'Windows disk inventory failed')
+                require(set(reply) == {'id', 'ok', 'items'} and type(reply['items']) is list,
+                        'Invalid disk inventory items')
+                return reply['items']
+            except Exception:
+                # Cleanup must not replace the inventory/identity failure.
+                self.close()
+                raise
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        process = self.process
+        if process is None:
+            return
+        try:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            # This process only inventories metadata. The worker still exits
+            # and its original device-operation failure remains latched.
+            pass
+        finally:
+            if self.reader is not None:
+                self.reader.join(timeout=0.2)
+            for stream in (process.stdin, process.stdout):
+                # TextIOWrapper.close takes the reader's lock. If Windows
+                # could not kill/reap the child, never wait on that lock.
+                if stream is process.stdout and self.reader is not None and self.reader.is_alive():
+                    continue
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+
+_inventory = None
+
+
+def close_inventory():
+    global _inventory
+    if _inventory is not None:
+        _inventory.close()
+        _inventory = None
+
+
 def disk():
-    items = ps_json("@(Get-CimInstance Win32_DiskDrive | Where-Object {$_.Model -eq 'WL82 UBOOT1.00 USB Device'} | Select-Object DeviceID,PNPDeviceID) | ConvertTo-Json -Compress")
-    if isinstance(items, dict):
-        items = [items]
+    global _inventory
+    if _inventory is None:
+        _inventory = DiskInventory()
+    items = _inventory.query()
     require(len(items) == 1, 'Exactly one FM-1 UBOOT disk required')
     item = items[0]
+    require(type(item) is dict and set(item) == {'DeviceID', 'PNPDeviceID'}
+            and all(type(value) is str for value in item.values()), 'Invalid disk identity')
     require(re.fullmatch(r'\\\\\.\\PHYSICALDRIVE[0-9]+', item['DeviceID']) is not None,
             'Unexpected disk path')
     require(item['PNPDeviceID'].startswith('USBSTOR\\DISK&VEN_WL82&PROD_UBOOT1.00&REV_1.00\\'),
@@ -288,6 +419,31 @@ def doom_status_progress(transcript):
     return active[0], active[-1], any(values['key_error'] for values in counters)
 
 
+def live_status_samples(transcript, profile):
+    """Parse diagnostics without imposing post-flash boot/idle predicates."""
+    rules = {
+        'DOOM-FM1/1': ('DOOM STATUS ', {'stage', 'fault', 'frames', 'stopped', 'lcd_stage',
+                                     'lcd_error', 'key_error', 'sys_hz', 'lsb_hz'}),
+        'MOD-EDITOR/1': ('MOD status ', {'ready', 'running', 'dirty', 'export', 'order', 'row',
+                                      'ch', 'sample', 'lcd', 'keys', 'audio', 'frames', 'underruns'}),
+        'MDX-KARAOKE/1': ('MDX running=', {'running', 'pending', 'frames', 'underruns',
+                                        'error', 'lcd', 'keys', 'audio'}),
+        'NES': ('TEST STATUS ', {'ready', 'busy', 'mode', 'dropped', 'frames', 'irqs', 'fault'}),
+    }
+    prefix, required = rules[profile]
+    samples = []
+    for line in transcript.splitlines(keepends=True):
+        if not line.startswith(prefix) or not line.endswith('\n'):
+            continue
+        line = line.split(' error=', 1)[0] if profile == 'DOOM-FM1/1' else line
+        fields = re.findall(r'(?<!\S)([a-z_]+)=(-?\d+)(?!\S)', line)
+        values = {key: int(value) for key, value in fields}
+        require(required <= set(values) and len(fields) == len(values), 'Incomplete live status')
+        samples.append(values)
+    require(samples, 'Live firmware status missing')
+    return samples
+
+
 def serial_action(op, run):
     import serial
     # Enumeration may lag a successful reset. No flash/reset retries here.
@@ -320,6 +476,28 @@ def serial_action(op, run):
                     break
             else:
                 raise ValueError('FM-1 serial HELLO not confirmed')
+            if op == 'serial_status':
+                require(len(transcript) <= 65536, 'Live serial transcript exceeded bound')
+                if doom_profile:
+                    profile, command = 'DOOM-FM1/1', 'DOOM STATUS'
+                elif 'MOD-EDITOR/1 RAM-TRANSFER' in reply:
+                    profile, command = 'MOD-EDITOR/1', 'MOD STATUS'
+                elif 'MDX-KARAOKE/1' in reply:
+                    profile, command = 'MDX-KARAOKE/1', 'MDX STATUS'
+                else:
+                    profile, command = 'NES', 'TEST STATUS'
+                observation = ''
+                for _ in range(4):
+                    port.write((command + '\n').encode('ascii')); port.flush()
+                    status = capture(port, 1)
+                    observation += status; transcript += status
+                    require(len(transcript) <= 65536, 'Live serial transcript exceeded bound')
+                # Live playback, edits and reported faults are diagnostic data.
+                # This operation sends no STOP/UBOOT and grants no boot permit.
+                return {'serial_hello_verified': True, 'profile': profile, 'port': name,
+                        'status_command': command,
+                        'samples': live_status_samples(observation, profile),
+                        'transcript': transcript, 'diagnostic_only': True, 'boot_verified': False}
             if op == 'observe':
                 if doom_profile:
                     observation = ''
@@ -449,6 +627,25 @@ class Session:
             return dict(self.state)
         if op == 'environment':
             return environment_info()
+        if op == 'serial_status':
+            # The pipe serializes callers. A completed failure may leave its
+            # operation name in state; permit diagnosis without clearing it.
+            require(self.state.get('operation', 'idle') == 'idle' or
+                    (self.state.get('blocked') and self.state.get('failed_operation') and
+                     self.state.get('error')), 'Session operation pending; inspect state before serial status')
+            run = self.root / 'runs' / uuid.uuid4().hex
+            run.mkdir(parents=True)
+            result = serial_action(op, run)
+            return {'result': result, 'log_directory': str(run)}
+        if op == 'read_firmware':
+            require(not self.state.get('reset_pending') and not self.state.get('needs_observation'),
+                    'Verified image still requires reset/observation before firmware read')
+            require(request['loader_state'] != 'cold' or not self.state.get('loader_running'),
+                    'Known RAM helper is running; use reuse or establish a fresh cold UBOOT through the local procedure')
+            base_path = (self.root / self.state['baseline_file']).resolve()
+            require(base_path.is_relative_to(self.root.resolve()), 'Baseline outside protected session')
+            base = base_path.read_bytes()
+            require(len(base) == SIZE and sha(base) == self.state['baseline_sha256'], 'Stored baseline damaged')
         if op in ('plan', 'flash', 'retry_flash', 'recover_flash'):
             base = (self.root / self.state['baseline_file']).read_bytes()
             require(sha(base) == self.state['baseline_sha256'], 'Stored baseline damaged')
@@ -476,6 +673,8 @@ class Session:
         if op in ('flash', 'retry_flash', 'recover_flash'):
             require(not self.state.get('reset_pending') and not self.state.get('needs_observation'),
                     'Previous verified image has not completed reset/observation')
+            require(not self.state.get('loader_running'),
+                    'Firmware read left a RAM helper running; establish a fresh cold UBOOT through the local power-cycle/CDC procedure before flash')
         run = self.root / 'runs' / uuid.uuid4().hex
         run.mkdir(parents=True)
         self.state['last_run'] = str(run)
@@ -535,6 +734,44 @@ class Session:
                 (run / 'attempt.json').write_text(json.dumps(attempt, indent=2), encoding='utf-8')
                 self.state.pop('failed_operation', None)
                 self.state.pop('error', None)
+            elif op == 'read_firmware':
+                target = disk()
+                recorded = self.state.get('target')
+                if recorded:
+                    require(target['PNPDeviceID'] == recorded['PNPDeviceID'], 'Firmware read target identity changed')
+                # Mark ownership before any helper/read command. A partial
+                # upload or lost response cannot authorize a later re-upload.
+                self.state['loader_running'] = True
+                self.save()
+                # Inquiry text cannot distinguish cold ROM from a running RAM
+                # helper. The caller must establish cold/reuse from history.
+                # Helper initialization/online can change NOR protection bits,
+                # including in reuse mode; no array erase/program is requested.
+                if request['loader_state'] == 'cold':
+                    helper = ROOT / 'tools/jl-uboot-tool/data/loaderblobs/usb/wl82loader.bin'
+                    require(sha(helper.read_bytes()) == HELPER_SHA, 'Helper hash mismatch')
+                    require(disk() == target, 'USB identity changed before helper upload')
+                    execute_cli(target['DeviceID'], ['help'], run / 'helper.log', 'load')
+                    require(disk() == target, 'USB identity changed after helper upload')
+                reads = []
+                for number in (1, 2):
+                    path = run / f'readback-{number}.bin'
+                    require(disk() == target, 'USB identity changed before firmware read')
+                    execute_cli(target['DeviceID'], [f'read 0 {SIZE} {path}'], run / f'readback-{number}.log')
+                    require(disk() == target, 'USB identity changed after firmware read')
+                    data = path.read_bytes()
+                    require(len(data) == SIZE, 'Short full firmware read')
+                    reads.append(data)
+                require(reads[0] == reads[1] and sha(reads[0]) == sha(reads[1]), 'Firmware reads differ; no export finalized')
+                exported = run / 'firmware.bin'
+                (run / 'readback-1.bin').rename(exported)
+                result = {'sha256': sha(reads[0]), 'size': SIZE, 'readback_count': 2,
+                          'loader_state': request['loader_state'],
+                          'file': str(exported.relative_to(self.root)), 'target': target,
+                          'chip_key_queried': False, 'flash_array_program_or_erase_commands_sent': False,
+                          'reset_requested': False, 'includes_device_configuration': True,
+                          'loader_online_may_change_nor_protection': True}
+                (run / 'firmware.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
             elif op == 'reset':
                 target = disk()
                 require(target == self.state['target'], 'Reset target changed')
@@ -543,11 +780,16 @@ class Session:
                 self.state['reset_pending'] = False
                 self.save()
                 execute_cli(target['DeviceID'], ['reset 1'], run / 'reset.log', 'reset')
+                self.state['loader_running'] = False
                 result = {'reset_command_completed': True, 'boot_verified': False}
             else:
                 result = serial_action(op, run)
                 if op == 'observe':
                     self.state['needs_observation'] = False
+                elif op == 'enter_uboot':
+                    # The supported CDC teardown/arm/confirm establishes a
+                    # newly entered UBOOT session rather than helper reuse.
+                    self.state['loader_running'] = False
             self.state['blocked'] = was_blocked if op == 'observe' else False
             # A reset transport disconnect can be resolved by verified CDC and
             # advancing firmware telemetry, but a failed flash can NEVER be cleared this way.
@@ -598,6 +840,8 @@ def main():
         result = {'ok': True, 'data': Session().handle(request)}
     except Exception as error:
         result = {'ok': False, 'error': f'{type(error).__name__}: {error}'}
+    finally:
+        close_inventory()
     print(json.dumps(result))
 
 
