@@ -7,10 +7,10 @@ Tailscale Serve supplies private HTTPS for the browser store. The existing
 reviewed WL82 tools remain the USB writer; the bridge adds no arbitrary shell,
 device path, erase, signing bypass, or network-selected executable endpoint.
 
-Implementation and offline tests are available. Laptop deployment, a real
-tailnet connection, USB read/write, LCD/audio/key behavior, and physical
-acceptance require the live checklist below. The remote peer was unavailable
-while this feature was implemented, so no remote bench acceptance is claimed.
+Implementation, automated tests, inventory-only laptop deployment and
+authenticated private HTTPS checks are complete. Protected USB read/write,
+LCD/audio/key behavior and physical acceptance still require the live checklist
+below. No remote bench acceptance is claimed.
 
 ```mermaid
 flowchart LR
@@ -82,8 +82,11 @@ normal private build inputs; the minimal laptop kit is not a complete SDK.
 
 ## Laptop setup
 
-Use the existing `C:\Python311\python.exe`. The protected broker hardcodes
-that interpreter even if the unelevated bridge uses `-Python` explicitly.
+Use the existing `C:\Python311\python.exe` for protected device operations. The
+protected broker hardcodes that interpreter even if the unelevated bridge uses
+`-Python` explicitly. Inventory-only operation can use another Python 3.11 or
+newer interpreter or dedicated virtual environment via `-Python`, with no
+`-SessionRoot` configured.
 The launcher only checks dependencies and never installs or repairs Python.
 If packages are missing, deliberately install the supplied versions into the
 intended existing interpreter:
@@ -368,8 +371,24 @@ verified baseline without opening USB or a protected pipe.
 | `buddha-namo` | 405072 | `0c4c8e07` | Fresh build; exact NAMO.MOD embedded boot array |
 | `protracker-stoa` | 483920 | `978f19b7` | Fresh isolated audited build |
 
-These are validated packages, not remotely deployed or physically accepted
-images. Full hashes, build/source freshness and the excluded local MDX fallback
+These are validated packages, not physically written or accepted images.
+Full hashes, build/source freshness and the excluded local MDX fallback
 failure are retained privately in
 `tmp/remote-catalog-20261008-a38c7d1f/receipts/build-evidence.json`. Old accepted
 build outputs were preserved. No flash, reset or UBOOT transition was requested.
+
+The private kit from source commit `54c9520` was subsequently deployed on the
+Windows laptop. The receiving session verified the ZIP SHA256 and all 126
+manifested file sizes/hashes, then prepared a dedicated Python 3.12 environment
+for inventory-only operation. It reported private state preparation, successful
+local authenticated status/catalog, duplicate-start reuse and a private HTTPS
+route without a protected session.
+
+At 19:41 JST on 2026-10-08 the PC independently verified the laptop's HTTPS
+certificate, static store HTTP 200, unauthenticated status HTTP 401, authenticated
+status/catalog and exact hashes for all five variants. Every variant remained
+unwritable without a protected session. Safe enumeration detected the FM-1 CDC
+interface; no serial or USB operation was submitted. Sanitized evidence remains
+in `tmp/laptop-https-evidence-20261008.json`; credentials are outside the repo.
+The laptop still needs `C:\Python311`, a fresh protected snapshot and a locally
+established same-device baseline before hardware acceptance can begin.
