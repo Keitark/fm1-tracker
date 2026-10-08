@@ -149,7 +149,7 @@ if ($OfficialUpdater) {
 
 function Get-BridgeHealth {
     try {
-        $answer = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/v1/status" -Headers @{Authorization=('Bearer ' + $token)} -TimeoutSec 20
+        $answer = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/v1/status" -Headers @{Authorization=('Bearer ' + $token)} -TimeoutSec 20 -MaximumRedirection 0
         if ($answer.ok -eq $true) { return $answer.data }
     } catch { }
     return $null
@@ -213,11 +213,12 @@ if (Test-Path -LiteralPath $pidFile) {
 }
 if ($running) {
     $savedProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($running.Id)"
-    $health = Get-BridgeHealth
-    if (-not $health -or -not $savedProcess -or $savedProcess.ExecutablePath -ne $runtime -or
-        -not $savedProcess.CommandLine.Contains($bridge) -or -not $savedProcess.CommandLine.Contains($state)) {
+    if (-not $savedProcess -or $savedProcess.ExecutablePath -ne $runtime -or
+        -not $savedProcess.CommandLine -or -not $savedProcess.CommandLine.Contains($bridge) -or -not $savedProcess.CommandLine.Contains($state)) {
         throw 'Recorded PID is alive but this bridge could not be verified. No process was stopped or duplicate launched.'
     }
+    $health = Get-BridgeHealth
+    if (-not $health) { throw 'Recorded bridge PID is alive but authenticated health is unavailable. No duplicate was launched.' }
     if ($oldConfig -and ($oldConfig.session -ne $SessionRoot -or $oldConfig.port -ne $Port -or
         $oldConfig.official_updater -ne $OfficialUpdater)) { throw 'Running bridge uses different launch settings; inspect it locally before restarting.' }
     Write-Output "Bridge already running, PID $($running.Id), loopback port $Port."
