@@ -368,6 +368,7 @@ verified baseline without opening USB or a protected pipe.
 | `nes-smb1` | 214896 | `4d4da3ab` | Fresh isolated audited build |
 | `doom-original` | 567344 | `d6884aae` | Existing fresh candidate and audited producer |
 | `mdx-demo` | 197040 | `e29d2aae` | Exact external MDX static audit and stock-container checks |
+| `mdx-rayforce-penetration` | 390416 | `c719cad5` | Fresh private-song build; exact MDX/PDX bytes in decoded image |
 | `buddha-namo` | 405072 | `0c4c8e07` | Fresh build; exact NAMO.MOD embedded boot array |
 | `protracker-stoa` | 483920 | `978f19b7` | Fresh isolated audited build |
 
@@ -392,3 +393,17 @@ interface; no serial or USB operation was submitted. Sanitized evidence remains
 in `tmp/laptop-https-evidence-20261008.json`; credentials are outside the repo.
 The laptop still needs `C:\Python311`, a fresh protected snapshot and a locally
 established same-device baseline before hardware acceptance can begin.
+
+The later private RayForce variant contains one song, `PENETRATION (ROUND 1)`,
+with its exact matching PDX bank. It passed fresh target linking, the complete
+static audit, stock-container gates and exact generated/ELF/packaged asset
+comparison. All 123 source, 10 archive and 3 overlay hashes matched. The
+source-only [private boot-song builder change](https://github.com/Keitark/fm1-mdx/pull/25)
+requires explicit MDX/PDX files and their SHA256 locks, preserves the original
+demo, and excludes that demo's metronome mute from the private music variant.
+Eighteen input/generator tests passed normally and with Python `-O`; the host
+workflow passed 19 CTest cases and 14 Python checks. A 65-second real-asset host
+replay passed without missing samples or player/LCD/USB errors. The private JSON
+and sanitized evidence were transferred over Taildrop for local catalog import.
+No hardware operation was performed during this package work. The stock demo
+and RayForce are distinct immutable catalog variants; select the desired one.
