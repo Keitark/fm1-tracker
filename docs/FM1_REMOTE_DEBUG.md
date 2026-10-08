@@ -415,3 +415,42 @@ authenticated HTTPS metadata check confirmed the imported RayForce ID/hash,
 an idle unblocked session and all six variants matching the preserved regions.
 This confirms catalog preparation and session configuration, not physical
 playback or a new full-flash hash. No device operation was submitted by the PC.
+
+## Windows inventory performance
+
+The protected worker now keeps one hidden PowerShell inventory process for each
+operation. Every `disk()` call still runs a fresh `Get-CimInstance` query. A normal
+N-sector flash retains `2*N+4` inventory queries: the initial target, after the
+helper upload, before and after each sector, and before and after the final full
+read. A 139-sector update therefore performs 282 fresh queries. Disk path and PNP
+identity checks, erase/program verification, independent sector readback,
+directory-last ordering, and final full-image verification are unchanged.
+
+The fixed inventory protocol accepts only numbered requests, validates the
+matching response and strict identity shape, and fails on malformed, stale,
+missing or timed-out responses. It does not restart or fall back automatically.
+The response wait is 15 seconds; cleanup attempts to kill/reap the child and
+bounds the reader join. If Windows refuses termination, cleanup avoids blocking
+on the active reader's stream lock and preserves the original failure latch.
+Termination is best effort in that error case; the child only queries metadata.
+Planning/status/environment requests never start the lazy inventory child.
+
+The laptop's read-only Python 3.11 isolated benchmark measured a 2.2801-second
+median for a new PowerShell process per query, a 2.6791-second first persistent
+query, and a 0.03035-second median across six subsequent fresh queries. The child
+was reaped afterward. These measurements establish reduced inventory overhead;
+they do not measure optimized firmware flashing or physical acceptance.
+
+Existing protected snapshots remain immutable. To use this source revision,
+create a new snapshot locally from the laptop's own current verified baseline
+and successful readback receipt, after reset/observation completes and the old
+session is idle. The inventory script is embedded in the worker and included in
+its existing protected hash closure; no external executable input was added.
+
+The final combined offline regression run passed 214 tests across the protected
+worker/deployment/recovery and remote modules, including 20 new inventory tests.
+The harmless-child tests cover fresh queries, malformed/stale responses, timeout
+and cleanup failures, and identity changes through the final readback. The
+original private NES regeneration check was rerun separately and still rejects
+its stale `app_main.c` hash; the remaining 214 tests exclude that failed artifact
+case. No firmware build or hardware operation was performed for this optimization.

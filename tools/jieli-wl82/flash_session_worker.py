@@ -8,11 +8,13 @@ import base64
 import hashlib
 import importlib
 import json
+import queue
 from pathlib import Path
 import re
 import runpy
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -175,12 +177,133 @@ def ps_json(script):
     return json.loads(result.stdout) if result.stdout.strip() else []
 
 
+INVENTORY_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+while ($null -ne ($line = [Console]::ReadLine())) {
+    if ($line -notmatch '^[1-9][0-9]{0,8}$') { exit 2 }
+    $sequence = [int]$line
+    try {
+        $items = @(Get-CimInstance Win32_DiskDrive -ErrorAction Stop |
+            Where-Object {$_.Model -eq 'WL82 UBOOT1.00 USB Device'} |
+            Select-Object DeviceID,PNPDeviceID)
+        $reply = @{id=$sequence; ok=$true; items=$items}
+    } catch {
+        $reply = @{id=$sequence; ok=$false; error='Windows disk inventory failed'}
+    }
+    [Console]::WriteLine(($reply | ConvertTo-Json -Depth 4 -Compress))
+    [Console]::Out.Flush()
+}
+"""
+
+
+class DiskInventory:
+    """One hidden process; every query obtains fresh Windows device metadata.
+
+    No cached identities, command input, automatic restart, or fallback. A lost
+    or invalid response fails the operation and retains its existing latch.
+    """
+    def __init__(self, timeout=15):
+        self.timeout = timeout
+        self.process = None
+        self.sequence = 0
+        self.lock = threading.Lock()
+        self.closed = False
+        self.reader = None
+
+    def query(self):
+        with self.lock:
+            require(not self.closed, 'Disk inventory process is closed')
+            try:
+                if self.process is None:
+                    self.process = subprocess.Popen(
+                        [PS, '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', INVENTORY_SCRIPT],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                        text=True, encoding='utf-8', errors='strict', bufsize=1,
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                require(self.process.poll() is None, 'Disk inventory process exited')
+                self.sequence += 1
+                require(self.sequence <= 999999999, 'Disk inventory request limit exceeded')
+                self.process.stdin.write(str(self.sequence) + '\n')
+                self.process.stdin.flush()
+                result = queue.Queue(maxsize=1)
+                def read_response():
+                    try:
+                        result.put((True, self.process.stdout.readline(65537)))
+                    except Exception as error:
+                        result.put((False, error))
+                reader = threading.Thread(target=read_response, daemon=True)
+                self.reader = reader
+                reader.start()
+                try:
+                    success, line = result.get(timeout=self.timeout)
+                except queue.Empty:
+                    raise TimeoutError('Windows disk inventory timed out') from None
+                if not success:
+                    raise line
+                require(line.endswith('\n') and len(line) <= 65536,
+                        'Disk inventory response missing or too large')
+                reply = json.loads(line)
+                require(type(reply) is dict and type(reply.get('id')) is int
+                        and reply['id'] == self.sequence and type(reply.get('ok')) is bool,
+                        'Invalid disk inventory response')
+                require(reply['ok'], 'Windows disk inventory failed')
+                require(set(reply) == {'id', 'ok', 'items'} and type(reply['items']) is list,
+                        'Invalid disk inventory items')
+                return reply['items']
+            except Exception:
+                # Cleanup must not replace the inventory/identity failure.
+                self.close()
+                raise
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        process = self.process
+        if process is None:
+            return
+        try:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            # This process only inventories metadata. The worker still exits
+            # and its original device-operation failure remains latched.
+            pass
+        finally:
+            if self.reader is not None:
+                self.reader.join(timeout=0.2)
+            for stream in (process.stdin, process.stdout):
+                # TextIOWrapper.close takes the reader's lock. If Windows
+                # could not kill/reap the child, never wait on that lock.
+                if stream is process.stdout and self.reader is not None and self.reader.is_alive():
+                    continue
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+
+_inventory = None
+
+
+def close_inventory():
+    global _inventory
+    if _inventory is not None:
+        _inventory.close()
+        _inventory = None
+
+
 def disk():
-    items = ps_json("@(Get-CimInstance Win32_DiskDrive | Where-Object {$_.Model -eq 'WL82 UBOOT1.00 USB Device'} | Select-Object DeviceID,PNPDeviceID) | ConvertTo-Json -Compress")
-    if isinstance(items, dict):
-        items = [items]
+    global _inventory
+    if _inventory is None:
+        _inventory = DiskInventory()
+    items = _inventory.query()
     require(len(items) == 1, 'Exactly one FM-1 UBOOT disk required')
     item = items[0]
+    require(type(item) is dict and set(item) == {'DeviceID', 'PNPDeviceID'}
+            and all(type(value) is str for value in item.values()), 'Invalid disk identity')
     require(re.fullmatch(r'\\\\\.\\PHYSICALDRIVE[0-9]+', item['DeviceID']) is not None,
             'Unexpected disk path')
     require(item['PNPDeviceID'].startswith('USBSTOR\\DISK&VEN_WL82&PROD_UBOOT1.00&REV_1.00\\'),
@@ -717,6 +840,8 @@ def main():
         result = {'ok': True, 'data': Session().handle(request)}
     except Exception as error:
         result = {'ok': False, 'error': f'{type(error).__name__}: {error}'}
+    finally:
+        close_inventory()
     print(json.dumps(result))
 
 
