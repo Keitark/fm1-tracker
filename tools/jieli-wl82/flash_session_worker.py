@@ -320,15 +320,29 @@ def trusted_local(root=ROOT):
     return value
 
 
+def frozen_runtime(root=ROOT):
+    config = root / 'session.json'
+    if not config.exists():
+        return False
+    value = json.loads(config.read_text(encoding='utf-8-sig')).get('freeze_python_runtime', False)
+    require(type(value) is bool, 'Invalid frozen runtime mode in session descriptor')
+    return value
+
+
 def python_flags():
-    return ['-u'] if trusted_local() else ['-I', '-S', '-u']
+    frozen, trusted = frozen_runtime(), trusted_local()
+    require(not (frozen and trusted), 'Conflicting runtime modes')
+    # An elevated bytecode cache must never introduce user-owned executable
+    # files into the otherwise immutable runtime/dependency snapshot.
+    return ['-u'] if trusted else ['-I', '-S', *(['-B'] if frozen else []), '-u']
 
 
 def environment_info():
     import ctypes
     packages = {name: importlib.import_module(name).__file__
                 for name in ('yaml', 'tqdm', 'crcmod', 'colorama', 'serial')}
-    return {'trusted_local': trusted_local(), 'python': sys.executable,
+    return {'trusted_local': trusted_local(), 'freeze_python_runtime': frozen_runtime(),
+            'dont_write_bytecode': sys.dont_write_bytecode, 'python': sys.executable,
             'isolated': bool(sys.flags.isolated), 'no_site': bool(sys.flags.no_site),
             'elevated': bool(ctypes.windll.shell32.IsUserAnAdmin()) if sys.platform == 'win32' else False,
             'packages': packages, 'device_io': False}
@@ -688,6 +702,10 @@ class Session:
         try:
             if op in ('flash', 'retry_flash', 'recover_flash'):
                 target = disk()
+                baseline_target = self.state.get('baseline_target')
+                if baseline_target:
+                    require(target['PNPDeviceID'] == baseline_target['PNPDeviceID'],
+                            'Verified readback baseline target identity changed')
                 # A replug can change PHYSICALDRIVE numbering; require the same
                 # recorded PNP identity, then pin both values for this attempt.
                 if retry and op == 'retry_flash':
