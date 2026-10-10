@@ -92,6 +92,42 @@ read baseline or recover a failed writer. Current-unit provenance, intervening
 writes, USB readiness and physical acceptance still require separate bench
 evidence; an offline migration or successful startup cannot establish them.
 
+## Live setup acceptance, 2026-10-10
+
+The tested source checkpoint `47a43f2` passed **99 focused tests**. One private
+profile fixture was excluded; the full private writer-fixture suite was not
+run. These counts describe the focused checks, not full writer acceptance.
+
+The isolated helper at
+`C:\Program Files\FM1FlashSession-53b32bdc8a444cdda6c838934831e49c`
+was live as PID **240396**, using the frozen runtime with
+`trusted_local:false`. Parent and child runtime proofs both passed with
+`device_io:false`. The previous verified-read source
+`C:\Program Files\FM1FlashSession-eb9a44433bae4d098a50aa178e80e011`
+was cleanly quit; PID **404572** was absent and its `stopped.txt` retained.
+These roots and PIDs are dated evidence, not future launcher defaults.
+
+Two actual, equal **1 MiB** device readbacks established the adopted baseline:
+`c719cad560ddcbc05a795cb77e11d65eeb108e1dfdb76afb508d71533437bf1f`.
+The original evidence was preserved under `readback-source/`, and the original
+historical baseline was retained. The new baseline has a readback receipt,
+not a fabricated firmware-deployment receipt.
+
+After the user's physical power-cycle, the supported serial-to-UBOOT
+transition completed. The new helper reported idle, unblocked,
+`loader_running:false` and `reset_pending:false`, with the baseline target
+guard retained. No array erase/program, actual firmware flash or vendor
+SysEx transfer was performed. This accepts isolated setup, readback adoption
+and the mode transition; it does not establish a selected app's write,
+startup, screen, audio or control acceptance.
+
+The attached native plugin subsequently completed the NES offline plan as
+job `427b240eda7c4867b403aee8f8838682`. Inspecting that same ID returned
+`status:succeeded`, `result.ok:true`, `device_io:false` and `blocked:false`.
+It planned 96 sectors while write, full-readback and boot-verification progress
+remained false. This establishes the attached helper's offline planning path;
+it does not perform or approve a firmware write.
+
 ## Doom support, 2026-10-05
 
 The current broker recognizes the Doom CDC identity
