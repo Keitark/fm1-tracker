@@ -231,6 +231,11 @@ error classification and records malformed OUT counts without payload reads.
 Adapter tests retrieve errors for known/unknown entities and OUT counts
 0, 25, 27 and 65,535, while preserving newer errors after a stale OUT callback.
 They check unchanged DMA/arm/COMMIT/alternate state with and without active video.
+Final emitted review confirms unchanged normal RAM, DMA, descriptor and heap;
+cache BSS is 6,500 bytes and its startup clear is retained. The receive and setup
+filter frames each grow four bytes; TX IRQ ≤160 bytes and task capture ≤512 bytes
+remain valid. This closes the local code/added-stack gate, while the corrected
+image remains unflashed and its camera behavior unverified.
 
 Raw 240 × 240 YUY2 at 30 frames/s requires 3,456,000 image bytes/s, so that target
 needs a working high-speed path or a different video encoding/mode.
