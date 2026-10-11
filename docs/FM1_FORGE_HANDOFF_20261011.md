@@ -83,8 +83,10 @@ Both relay write permissions remain disabled. The old protected session retains
 the exact verified rollback metadata, but its helper process is dead. Its
 `stopped:false` status is only a missing marker and does not prove availability.
 Windows elevation for the new immutable helper was canceled; no new helper or
-device operation was performed. The newly expanded Forge panel still needs
-inspection; older expanded App Library cards are cached instances.
+device operation was performed. The current native Forge panel was inspected
+in Codex: Forge branding/onboarding, exact diagnostics catalog and COM10 are
+present, with HTML/body backgrounds verified as opaque black. The hosted service
+title is now FM1 Forge as well. Physical hardware acceptance remains pending.
 
 ## Remaining physical work
 
