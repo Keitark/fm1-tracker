@@ -24,6 +24,50 @@ def request(base, image, op='plan'):
 
 
 class PolicyTests(unittest.TestCase):
+    def test_phy_probe_requires_exact_baseline_and_separate_profile(self):
+        import prepare_flash_request as prepare
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); app=b'probe app'; elf=b'probe elf'; source=root/'input.h'
+            source.write_bytes(b'header')
+            manifest={'status':'LINKED_USB_DIAGNOSTIC_UNTESTED','usb_hs_phy_probe':True,
+                'usb_controller_candidate':0,'probe_controller_candidate':1,
+                'mod':False,'mdx':False,'nes_smb1':False,'peripheral_tests':False,
+                'application_sha256':worker.sha(app),
+                'source_sha256':{str(source):worker.sha(source.read_bytes())},
+                'archive_sha256':{},'vendor_overlay_sources':{}}
+            (root/'fm1-usb-diag.app.bin').write_bytes(app)
+            (root/'fm1-usb-diag.elf').write_bytes(elf)
+            def save():
+                (root/'build-manifest.json').write_text(json.dumps(manifest))
+            save(); baseline=bytes(worker.SIZE); image=bytearray(baseline)
+            image[0x4000]=1;image[0x4120]=2; calls=[]
+            def pack(base,actual_elf,actual_app,**flags):
+                self.assertEqual((actual_elf,actual_app),(elf,app));calls.append(flags)
+                return bytes(image),{'candidate_sha256':worker.sha(image)}
+            fake=SimpleNamespace(V14_BACKUP=source,build_candidate=pack)
+            with patch.dict(sys.modules,{'build_stock_image':fake}):
+                req=prepare.prepare(root,worker.sha(baseline),baseline)
+                self.assertEqual(base64.b64decode(req['image']),bytes(image))
+                self.assertTrue(calls[0]['usb_hs_phy_probe'])
+                self.assertFalse(calls[0]['usb_peripheral_tests'])
+                self.assertFalse(calls[0]['usb_nes'])
+                self.assertEqual(calls[0]['rom'],'rom50')
+                with self.assertRaisesRegex(ValueError,'exact verified current baseline'):
+                    prepare.prepare(root,worker.sha(baseline))
+                for field,bad in (('usb_hs_phy_probe','true'),('usb_controller_candidate',1),
+                    ('probe_controller_candidate',0),('peripheral_tests',True),
+                    ('nes_smb1',True),('mod',True),('mdx',True)):
+                    old=manifest[field];manifest[field]=bad;save()
+                    with self.assertRaises(ValueError):
+                        prepare.prepare(root,worker.sha(baseline),baseline)
+                    manifest[field]=old
+                save();image[0]=1
+                with self.assertRaisesRegex(ValueError,'outside application scope'):
+                    prepare.prepare(root,worker.sha(baseline),baseline)
+                image[0]=0;source.write_bytes(b'stale')
+                with self.assertRaisesRegex(ValueError,'Stale source'):
+                    prepare.prepare(root,worker.sha(baseline),baseline)
+
     def test_mod_request_requires_verified_current_baseline_and_profile(self):
         import prepare_flash_request as prepare
         with tempfile.TemporaryDirectory() as folder:
@@ -50,6 +94,20 @@ class PolicyTests(unittest.TestCase):
                 self.assertTrue(calls[0]['usb_mod'])
                 self.assertFalse(calls[0]['usb_nes'])
                 self.assertEqual(calls[0]['rom'],'rom50')
+                self.assertFalse(calls[0]['usb_uvc_screen'])
+                manifest.update(usb_uvc_screen=True,usb_controller_candidate=0,lcd_async=True)
+                def save_uvc():
+                    (root/'build-manifest.json').write_text(json.dumps(manifest))
+                save_uvc()
+                prepare.prepare(root,worker.sha(baseline),baseline)
+                self.assertTrue(calls[-1]['usb_uvc_screen'])
+                for field,bad in (('usb_uvc_screen',1),('usb_controller_candidate',1),
+                                  ('lcd_async',False),('usb_hs_phy_probe',True),('mod',False)):
+                    previous=manifest.get(field,False);manifest[field]=bad;save_uvc()
+                    with self.assertRaisesRegex(ValueError,'Screen UVC'):
+                        prepare.prepare(root,worker.sha(baseline),baseline)
+                    manifest[field]=previous
+                manifest['usb_uvc_screen']=False;save_uvc()
                 with self.assertRaisesRegex(ValueError,'exact verified current baseline'):
                     prepare.prepare(root,'0'*64,baseline)
                 changed=bytearray(baseline);changed[0]=1
@@ -360,6 +418,179 @@ class PolicyTests(unittest.TestCase):
                     with self.assertRaises(SystemExit):exec(code,{'argparse':argparse,'anyint':lambda x:int(x,0)})
 
 
+class HsPhySerialTests(unittest.TestCase):
+    @staticmethod
+    def report(status=4, **changes):
+        defaults = {
+            1: dict(ready=0,polls=20000,reset=0,hs=0,power=0,samples=0,ms=0),
+            2: dict(ready=1,polls=1,reset=0,hs=0,power=0x60,samples=500,ms=5010),
+            3: dict(ready=1,polls=1,reset=1,hs=0,power=0x60,samples=500,ms=5010),
+            4: dict(ready=1,polls=1,reset=1,hs=1,power=0x70,samples=500,ms=5010),
+        }
+        values = dict(defaults.get(status, defaults[4]), status=status)
+        values.update(changes)
+        return ('USB PHY status={status} ready={ready} polls={polls} reset={reset} '
+                'hs={hs} power={power:02x} samples={samples} ms={ms} USB0-RESTORED\n').format(**values)
+
+    @staticmethod
+    def banner(uptime, stage=3):
+        return (f'# FM1DIAG/1 profile=usb1-phy-probe/1 stage={stage} trace=000001ff '
+                f'uptime={uptime} boot=serial-uboot update=verify-only commit=blocked\n')
+
+    def test_completed_probe_statuses_and_tick_overshoot(self):
+        for status in (1,2,3,4):
+            values=worker.hs_phy_status_values(self.report(status))
+            self.assertEqual(values[0]['status'],status)
+        self.assertEqual(worker.hs_phy_status_values(self.report(ms=5100))[0]['ms'],5100)
+        # A first time sample already beyond the negotiation deadline can
+        # legitimately leave zero MMIO samples in the NO_RESET report.
+        worker.hs_phy_status_values(self.report(2,samples=0,ms=5000,power=0))
+
+    def test_malformed_truncated_duplicate_and_out_of_bound_reports(self):
+        line=self.report()
+        malformed=[line.rstrip('\n'),line.replace(' USB0-RESTORED',''),
+            line.replace('ready=1','ready=1 ready=1'),line.replace('power=70','power=070'),
+            line.replace('polls=1','polls=1.5'),line.replace('samples=500','samples=-1'),
+            line.replace('ms=5010','ms=9999999999999999999999999')]
+        for changes in ({'status':0},{'status':5},{'ready':2},{'polls':0},{'polls':20001},
+                        {'reset':2},{'hs':2},{'samples':501},{'ms':5101}):
+            malformed.append(self.report(**changes))
+        for report in malformed:
+            with self.subTest(report=report),self.assertRaises(ValueError):
+                worker.hs_phy_status_values(report)
+        with self.assertRaisesRegex(ValueError,'exceeded bound'):
+            worker.hs_phy_status_values(line+'x'*65536)
+
+    def test_contradictory_fields_and_immutable_reports_are_rejected(self):
+        cases=[(1,{'ready':1}),(1,{'polls':19999}),(1,{'reset':1}),
+               (2,{'ready':0}),(2,{'reset':1}),(2,{'hs':1}),
+               (2,{'samples':0,'ms':0}),(3,{'reset':0}),(3,{'hs':1}),(3,{'power':0x70}),
+               (4,{'reset':0}),(4,{'hs':0}),(4,{'power':0x60}),(4,{'samples':0})]
+        for status,changes in cases:
+            with self.subTest(status=status,changes=changes),self.assertRaisesRegex(ValueError,'Contradictory'):
+                worker.hs_phy_status_values(self.report(status,**changes))
+        with self.assertRaisesRegex(ValueError,'immutable'):
+            worker.hs_phy_status_values(self.report()+self.report(polls=2))
+        self.assertEqual(len(worker.hs_phy_status_values(self.report()*4)),4)
+
+    def test_observation_requires_complete_stage3_and_advancing_uptime(self):
+        good=self.report()+self.banner(6000)+self.banner(7000)
+        report,first,last=worker.hs_phy_status_progress(good)
+        self.assertEqual((report['status'],first['uptime'],last['uptime']),(4,6000,7000))
+        cases=[self.report(),self.report()+self.banner(6000),
+               self.report()+self.banner(6000)+self.banner(6000),
+               self.report()+self.banner(6000)+self.banner(5000),
+               self.report()+self.banner(6000,stage=2)+self.banner(7000),
+               self.report()+self.banner(6000)+self.banner(7000).rstrip('\n'),
+               self.report()+self.banner(6000)+self.banner(7000).replace('stage=3','stage=3 stage=3'),
+               self.report()+self.banner(6000)+self.banner(0x100000000),
+               good+'FAULT runtime\n',good+'fault runtime\n']
+        for transcript in cases:
+            with self.subTest(transcript=transcript),self.assertRaises(ValueError):
+                worker.hs_phy_status_progress(transcript)
+
+    def test_serial_ops_use_exact_profile_identity_and_phy_commands(self):
+        sent=[]
+        class Port:
+            def __init__(self,**kwargs):pass
+            def __enter__(self):return self
+            def __exit__(self,*args):pass
+            def open(self):pass
+            def write(self,data):sent.append(data)
+            def flush(self):pass
+        hello=worker.HS_PHY_HELLO+'\n'
+        with tempfile.TemporaryDirectory() as folder,patch.dict(sys.modules,{'serial':SimpleNamespace(Serial=Port)}),patch.object(worker,'serial_port',return_value='COM_FAKE'),patch.object(worker.time,'sleep'):
+            root=Path(folder)
+            responses=[self.report()+self.banner(n) for n in (6000,7000,8000,9000)]
+            with patch.object(worker,'capture',side_effect=['',hello]+responses):
+                result=worker.serial_action('observe',root)
+                self.assertEqual(result['profile'],'USB1-PHY-PROBE/1')
+                self.assertTrue(result['usb0_restored_verified'])
+                self.assertTrue(result['high_speed_phy_negotiated'])
+                self.assertFalse(result['high_speed_enumeration_verified'])
+                self.assertEqual(sent,[b'HELLO\n']+[b'USB PHY STATUS\n']*4)
+            sent.clear()
+            with patch.object(worker,'capture',side_effect=['',hello]+[self.report(2)]*4):
+                result=worker.serial_action('serial_status',root)
+                self.assertFalse(result['boot_verified'])
+                self.assertFalse(result['high_speed_phy_negotiated'])
+                self.assertFalse(result['high_speed_enumeration_verified'])
+                self.assertFalse(result['usb0_restored_verified'])
+                self.assertEqual(result['status_command'],'USB PHY STATUS')
+                self.assertEqual(sent,[b'HELLO\n']+[b'USB PHY STATUS\n']*4)
+            sent.clear()
+            with patch.object(worker,'capture',side_effect=['',hello,'OK UBOOT ARMED CONFIRM-WITHIN-5000MS\n']),patch.object(worker,'disk',return_value={'DeviceID':'fake'}):
+                worker.serial_action('enter_uboot',root)
+                self.assertEqual(sent,[b'HELLO\n',b'UBOOT\n',b'UBOOT CONFIRM\n'])
+            bad_hellos=[hello.rstrip('\n'),hello.replace('COMMIT=BLOCKED','COMMIT=ALLOWED'),
+                hello.replace('USB0=CDC','USB0=OTHER'),'error='+hello,' '+hello,
+                hello.replace('\n',' NES=SMB1\n'),'FM1DIAG/1 USB-ONLY UBOOT=SERIAL COMMIT=BLOCKED\n',
+                self.banner(6000)]
+            for op in ('observe','serial_status','enter_uboot'):
+                for bad in bad_hellos:
+                    sent.clear()
+                    with self.subTest(op=op,hello=bad),patch.object(worker,'capture',side_effect=['']+[bad]*3):
+                        with self.assertRaisesRegex(ValueError,'HELLO not confirmed'):
+                            worker.serial_action(op,root)
+                        self.assertEqual(sent,[b'HELLO\n']*3)
+
+
+class FlashFreshPreflightTests(unittest.TestCase):
+    def fresh_attempt(self,current,changed_identity=False):
+        folder=tempfile.TemporaryDirectory();self.addCleanup(folder.cleanup)
+        root=Path(folder.name);base=bytes(worker.SIZE);image=bytearray(base);image[0x4000]=1
+        (root/'baseline.bin').write_bytes(base)
+        (root/'state.json').write_text(json.dumps(dict(baseline_file='baseline.bin',
+            baseline_sha256=worker.sha(base),blocked=False,reset_pending=False)))
+        helper=root/'tools/jl-uboot-tool/data/loaderblobs/usb/wl82loader.bin'
+        helper.parent.mkdir(parents=True);helper.write_bytes(b'test pinned helper')
+        target={'DeviceID':'fake-drive','PNPDeviceID':'fake-usb'};commands=[]
+        def cli(device,actual,log,mode='write'):
+            commands.append((mode,actual))
+            if mode=='load':return
+            self.assertEqual(len(actual),1)
+            parts=actual[0].split(' ',3)
+            self.assertEqual(parts[:3],['read','0',str(worker.SIZE)])
+            Path(parts[3]).write_bytes(current)
+        writer=SimpleNamespace(deploy=unittest.mock.Mock())
+        def deploy(device,run,actual_base,actual_image,**options):
+            path=options['verified_preflight']
+            self.assertEqual(path,run/'preflight-current.bin')
+            self.assertEqual(path.read_bytes(),actual_base)
+            self.assertEqual(actual_base,base)
+            self.assertTrue(options['nes_cdc'])
+            (run/'final-1.bin').write_bytes(actual_image)
+            return {'status':'written_and_readback_verified','full_readback_count':1}
+        writer.deploy.side_effect=deploy
+        identities=[target,target,dict(target,DeviceID='different-drive')] if changed_identity else [target]*3
+        with patch.object(worker,'ROOT',root),patch.object(worker,'HELPER_SHA',worker.sha(helper.read_bytes())),patch.object(worker,'disk',side_effect=identities),patch.object(worker,'execute_cli',side_effect=cli),patch.dict(sys.modules,{'deploy_v14_smb1_via_cli':writer}):
+            if current!=base or changed_identity:
+                with self.assertRaisesRegex(ValueError,'differs from protected baseline|identity changed'):
+                    worker.Session(root).handle(request(base,image,'flash'))
+                writer.deploy.assert_not_called()
+                self.assertTrue(worker.Session(root).state['blocked'])
+            else:
+                session=worker.Session(root)
+                session.handle(request(base,image,'flash'))
+                writer.deploy.assert_called_once()
+                self.assertEqual(session.state['flash_attempt']['fresh_preflight']['sha256'],worker.sha(base))
+                self.assertTrue(session.state['reset_pending'])
+        self.assertEqual(commands[0],('load',['help']))
+        self.assertEqual(len(commands),2)
+        self.assertTrue(commands[1][1][0].startswith(f'read 0 {worker.SIZE} '))
+        self.assertFalse(any(command.startswith(('write ','erase ')) for _,group in commands for command in group))
+
+    def test_exact_fresh_baseline_proceeds_with_checked_read_path(self):
+        self.fresh_attempt(bytes(worker.SIZE))
+
+    def test_mismatch_short_read_and_changed_identity_never_reach_writer(self):
+        changed=bytearray(worker.SIZE);changed[0xee000]=1
+        for current in (bytes(changed),bytes(worker.SIZE-1)):
+            with self.subTest(size=len(current)):
+                self.fresh_attempt(current)
+        self.fresh_attempt(bytes(worker.SIZE),changed_identity=True)
+
+
 class CliLogTests(unittest.TestCase):
     def run_cli(self, output, log, mode='reset', returncode=0):
         # Run a real, harmless child process so redirected output is written as
@@ -462,7 +693,7 @@ class RetryTests(unittest.TestCase):
         self.run_request('retry_flash')
         state = worker.Session(self.root).state
         self.assertEqual(self.writes,[0x5000,0x5000,0x6000,0x4000])
-        self.assertEqual(self.reads,[(0x5000,4096),(0x6000,4096),(0x4000,4096),(0,worker.SIZE)])
+        self.assertEqual(self.reads,[(0,worker.SIZE),(0x5000,4096),(0x6000,4096),(0x4000,4096),(0,worker.SIZE)])
         self.assertEqual(self.modes.count('load'),2)
         self.assertNotIn('reset',self.modes)
         self.assertEqual(bytes(self.memory),self.image)
@@ -498,7 +729,7 @@ class RetryTests(unittest.TestCase):
         self.fail = False
         self.run_request('retry_flash')
         self.assertEqual(self.writes,[0x5000,0x6000,0x5000,0x6000,0x4000])
-        self.assertEqual(self.reads.count((0,worker.SIZE)),1)
+        self.assertEqual(self.reads.count((0,worker.SIZE)),2)  # Initial flash preflight + retry final verification.
 
     def test_retry_rejects_changed_candidate_regular_flash_and_changed_identity(self):
         self.failed_flash()
@@ -509,7 +740,7 @@ class RetryTests(unittest.TestCase):
         self.target['PNPDeviceID'] = 'different-usb-device'
         with self.assertRaisesRegex(ValueError,'identity changed'): self.run_request('retry_flash')
         self.assertEqual(self.writes,[0x5000])
-        self.assertEqual(self.modes,['load','write'])
+        self.assertEqual(self.modes,['load','write','write'])  # One helper, fresh read, failed write.
         self.assertTrue(worker.Session(self.root).state['blocked'])
 
     def test_retry_requires_completed_failure_and_rejects_pending_or_reset_failure(self):
@@ -533,7 +764,7 @@ class RetryTests(unittest.TestCase):
         state = worker.Session(self.root).state
         self.assertTrue(state['blocked']); self.assertFalse(state['reset_pending'])
         self.assertEqual(state['baseline_sha256'],worker.sha(self.base))
-        self.assertEqual(self.reads.count((0,worker.SIZE)),1)
+        self.assertEqual(self.reads.count((0,worker.SIZE)),2)  # Initial flash preflight + rejected final read.
 
     def legacy_evidence(self):
         failed = self.failed_flash()

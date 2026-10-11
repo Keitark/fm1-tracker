@@ -19,8 +19,12 @@ def require(condition,message):
     if not condition: raise ValueError(message)
 
 
-def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,require_boot_trace=False,require_board_power=False,require_screen_first=False,usb_only=False,usb_peripheral_tests=False,usb_nes=False,usb_mdx=False,usb_audio=False,usb_mod=False):
+def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,require_boot_trace=False,require_board_power=False,require_screen_first=False,usb_only=False,usb_peripheral_tests=False,usb_nes=False,usb_mdx=False,usb_audio=False,usb_mod=False,usb_hs_phy_probe=False,usb_uvc_screen=False):
     require(not usb_audio or usb_mdx,'Composite audio requires the MDX profile')
+    require(not usb_uvc_screen or (usb_only and usb_mod and usb_peripheral_tests and not usb_hs_phy_probe and not usb_audio),
+            'Screen UVC requires the separate USB0 MOD peripheral profile')
+    require(not usb_hs_phy_probe or (usb_only and not usb_peripheral_tests and not usb_nes and not usb_mdx and not usb_mod and not usb_audio),
+            'USB1 PHY probe requires its separate USB0-only diagnostic profile')
     require(not usb_nes or (usb_only and usb_peripheral_tests and rom=='smb1'),'NES CDC requires explicit SMB1 peripheral profile')
     require(not usb_mdx or (usb_only and usb_peripheral_tests and not usb_nes),'MDX requires a separate CDC peripheral profile')
     require(not usb_mod or (usb_only and usb_peripheral_tests and not usb_nes and not usb_mdx),'MOD requires a separate CDC peripheral profile')
@@ -182,6 +186,10 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             # a writeback store instead of the NES direct-base store.
             delta=address-value('ota_status')
             encodings={176:'d0 ec 03 1b',180:'d0 ec 07 1b'}
+            # USB1 PHY probe: reviewed __wrap_memory_init at0x20026de,
+            # ota_status0x1c04070 +184 = trace0x1c04128. Same46-byte
+            # wrapper/22-byte marker; store d0 ec 0b 1b is [++r0=184]=r1.
+            if usb_hs_phy_probe:encodings.update({184:'d0 ec 0b 1b'})
             if usb_peripheral_tests:encodings.update({228:'d0 ec 07 1e',244:'d0 ec 07 1f'})
             # Reviewed NES CDC links: same writeback store. KEYSPI diagnostic
             # disassembly stores at ota_status 0x1c196f0 + 284 = trace 0x1c1980c.
@@ -226,6 +234,10 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             # ota_status 0x1c5be50 +380 = trace 0x1c5bfcc; store at
             # 0x200276c is d1 ec 0f 17. Same 46-byte wrapper/22-byte marker.
             if usb_mod:encodings.update({380:'d1 ec 0f 17'})
+            # Screen UVC link: ota_status0x1c5bcb0 +384 = trace0x1c5be30;
+            # reviewed wrapper0x200275e store0x200276c is [++r0=384]=r1.
+            # The 46-byte wrapper and 22-byte marker remain fully checked.
+            if usb_uvc_screen:encodings.update({384:'d1 ec 03 18'})
             # Composite link: ota_status0x1c4db50 +344 = trace0x1c4dca8;
             # reviewed store0x200276c: d1 ec 0b 15. Wrapper otherwise unchanged.
             if usb_audio:encodings.update({344:'d1 ec 0b 15'})
@@ -349,6 +361,7 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
         for name in ('cdc_read_data','cdc_write_data','fm1_cdc_ready','fm1_usb_dma','fm1_diag_feed'):
             require(name in symbols,'Missing USB diagnostic '+name)
         descriptor=bytes((18,1,0,2,2,2,1,64,0x54,0x36,0x55,0x51,0,2,1,2,0,1))
+        if usb_uvc_screen:descriptor=bytes((18,1,0,2,0xef,2,1,64,0x54,0x36,0x55,0x51,0,2,1,2,0,1))
         if usb_audio:descriptor=bytes((18,1,0,2,0xef,2,1,64,0x54,0x36,0x55,0x51,3,2,1,2,0,1))
         if usb_audio:
             for name in ('fm1_uac_desc_config','fm1_usb_audio_dac','fm1_usb_audio_stop','fm1_uac_descriptor','fm1_uac_dma'):
@@ -368,6 +381,29 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
                 'USB DMA alignment/size/placement changed')
         require('usb0_g_isr' in symbols and 'usb1_g_isr' not in symbols,
                 'Only the reviewed USB0 candidate is currently audited')
+        if usb_uvc_screen:
+            for name in ('fm1_uvc_setup_init','fm1_uvc_desc_config','fm1_uvc_capture_stop',
+                         'fm1_uvc_dma','fm1_uvc_state','fm1_uvc_video_descriptor'):
+                require(name in symbols and symbols[name][1]>0,'Missing screen UVC component '+name)
+            video_dma,video_dma_size,_=symbols['fm1_uvc_dma']
+            require(video_dma_size==1024 and video_dma%64==0 and
+                    bss[3]<=video_dma and video_dma+video_dma_size<=bss[3]+bss[5],
+                    'Video DMA size/alignment/internal-RAM placement changed')
+            video_state,video_state_size,_=symbols['fm1_uvc_state']
+            cache_bss=sections['.cache_ram_bss']
+            require(video_state_size==3012 and cache_bss[3]<=video_state and
+                    video_state+video_state_size<=cache_bss[3]+cache_bss[5],
+                    'CPU-only video queue is not in initialized cache RAM')
+            require(symbols['fm1_uvc_video_descriptor'][1]==159 and
+                    hashlib.sha256(code_at(value('fm1_uvc_video_descriptor'),159)).hexdigest()==
+                    'c7b44612ea9c53adfb3bb395629606de3e79251a98ab8edc08beac03d348c24e',
+                    'UVC1.0 interface/terminal/YUY2/endpoint descriptor changed')
+            for name in ('uvc_register','uvc_init','uvc_camera_open','usb1_g_isr'):
+                require(name not in symbols,'Unreviewed camera/USB1 component '+name)
+        if usb_hs_phy_probe:
+            for name in ('fm1_hs_phy_probe_run','fm1_hs_phy_probe_report'):
+                require(name in symbols and symbols[name][1]>0,'Missing bounded USB1 PHY probe '+name)
+                code_at(value(name),symbols[name][1])
         irq,irq_size,_=symbols['usb0_g_isr']
         require(code_at(irq+irq_size-2,2)==b'\x81\x00','USB ISR lacks interrupt return')
         boot_enabled='go_mask_usb_updata' in symbols
@@ -509,7 +545,7 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             'usb_only':usb_only,
             'usb_bootloader_entry':usb_only and 'go_mask_usb_updata' in symbols,
             'usb_peripheral_tests':usb_peripheral_tests,
-            'usb_nes':usb_nes,'usb_mod':usb_mod,
+            'usb_nes':usb_nes,'usb_mod':usb_mod,'usb_hs_phy_probe':usb_hs_phy_probe,'usb_uvc_screen':usb_uvc_screen,
             'cartridge':None if display_only or (usb_only and not usb_nes) else rom,'embedded_rom_sha256':None if display_only or (usb_only and not usb_nes) else rom_sha,'hardware_boot_verified':False,'flashable':False}
 
 

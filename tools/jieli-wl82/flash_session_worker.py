@@ -421,6 +421,8 @@ def doom_status_progress(transcript):
 
 def live_status_samples(transcript, profile):
     """Parse diagnostics without imposing post-flash boot/idle predicates."""
+    if profile == 'USB1-PHY-PROBE/1':
+        return hs_phy_status_values(transcript)
     rules = {
         'DOOM-FM1/1': ('DOOM STATUS ', {'stage', 'fault', 'frames', 'stopped', 'lcd_stage',
                                      'lcd_error', 'key_error', 'sys_hz', 'lsb_hz'}),
@@ -442,6 +444,82 @@ def live_status_samples(transcript, profile):
         samples.append(values)
     require(samples, 'Live firmware status missing')
     return samples
+
+
+HS_PHY_HELLO = 'FM1DIAG/1 USB1-PHY-PROBE/1 USB0=CDC UBOOT=SERIAL COMMIT=BLOCKED'
+
+
+def exact_complete_line(transcript, expected):
+    return any(line in (expected + '\n', expected + '\r\n')
+               for line in transcript.splitlines(keepends=True))
+
+
+def hs_phy_status_values(transcript):
+    """Validate the immutable bounded boot probe, not USB1 enumeration."""
+    require(len(transcript) <= 65536, 'USB PHY transcript exceeded bound')
+    pattern = re.compile(r'USB PHY status=(\d{1,5}) ready=(\d{1,5}) polls=(\d{1,5}) '
+                         r'reset=(\d{1,5}) hs=(\d{1,5}) power=([0-9a-fA-F]{2}) '
+                         r'samples=(\d{1,5}) ms=(\d{1,5}) USB0-RESTORED\r?\n')
+    names = ('status', 'ready', 'polls', 'reset', 'hs', 'power', 'samples', 'ms')
+    samples = []
+    for line in transcript.splitlines(keepends=True):
+        if not line.startswith('USB PHY '):
+            continue
+        match = pattern.fullmatch(line)
+        require(match is not None, 'Incomplete or malformed USB PHY status')
+        values = {name: int(value, 16 if name == 'power' else 10)
+                  for name, value in zip(names, match.groups())}
+        require(1 <= values['status'] <= 4 and values['ready'] in (0, 1) and
+                1 <= values['polls'] <= 20000 and values['reset'] in (0, 1) and
+                values['hs'] in (0, 1) and values['samples'] <= 500 and
+                values['ms'] <= 5100, 'USB PHY status outside bounded probe limits')
+        if values['status'] == 1:
+            require(values['ready'] == 0 and values['polls'] == 20000 and
+                    not any(values[key] for key in ('reset', 'hs', 'power', 'samples', 'ms')),
+                    'Contradictory USB PHY readiness timeout')
+        else:
+            require(values['ready'] == 1, 'Contradictory USB PHY ready report')
+            if values['status'] == 2:
+                require(values['reset'] == 0 and values['hs'] == 0,
+                        'Contradictory USB PHY no-reset report')
+                require(values['samples'] >= 1 or
+                        (values['ms'] >= 5000 and values['power'] == 0),
+                        'Contradictory USB PHY empty sampling report')
+            elif values['status'] == 3:
+                require(values['samples'] >= 1 and values['reset'] == 1 and values['hs'] == 0 and
+                        not values['power'] & 0x10,
+                        'Contradictory USB PHY reset-without-HS report')
+            else:
+                require(values['samples'] >= 1 and values['reset'] == 1 and values['hs'] == 1 and
+                        values['power'] & 0x10,
+                        'Contradictory USB PHY high-speed report')
+        samples.append(values)
+    require(samples, 'USB PHY status missing')
+    require(all(sample == samples[0] for sample in samples),
+            'Contradictory immutable USB PHY reports')
+    return samples
+
+
+def hs_phy_status_progress(transcript):
+    require('FAULT' not in transcript.upper(), 'Firmware failure reported; inspect serial log')
+    samples = hs_phy_status_values(transcript)
+    pattern = re.compile(r'# FM1DIAG/1 profile=usb1-phy-probe/1 stage=(\d{1,3}) '
+                         r'trace=([0-9a-fA-F]{8}) uptime=(\d{1,10}) '
+                         r'boot=serial-uboot update=verify-only commit=blocked\r?\n')
+    banners = []
+    for line in transcript.splitlines(keepends=True):
+        if not line.startswith('# FM1DIAG/1 profile=usb1-phy-probe/1'):
+            continue
+        match = pattern.fullmatch(line)
+        require(match is not None, 'Incomplete USB PHY diagnostic banner')
+        stage, trace, uptime = match.groups()
+        require(int(stage) == 3 and int(uptime) <= 0xffffffff,
+                'USB0 restored task stage/uptime invalid')
+        banners.append({'stage': int(stage), 'trace': int(trace, 16), 'uptime': int(uptime)})
+    require(len(banners) >= 2 and all(banners[i]['uptime'] > banners[i-1]['uptime']
+                                    for i in range(1, len(banners))),
+            'USB0 restored task uptime progress not confirmed')
+    return samples[-1], banners[0], banners[-1]
 
 
 def serial_action(op, run):
@@ -468,17 +546,21 @@ def serial_action(op, run):
                 port.write(b'HELLO\n'); port.flush()
                 reply = capture(port, 1)
                 transcript += reply
+                hs_phy_profile = exact_complete_line(reply, HS_PHY_HELLO)
+                hs_phy_mentioned = 'USB1-PHY-PROBE' in reply or 'profile=usb1-phy-probe' in reply
                 doom_profile = 'FM1DIAG/1 DOOM-FM1/1 UBOOT=SERIAL COMMIT=BLOCKED' in reply.splitlines()
-                if 'FM1DIAG/1' in reply and (re.search(r'\bNES=(?:SMB1|INES)\b',reply) or
+                if hs_phy_profile or (not hs_phy_mentioned and 'FM1DIAG/1' in reply and (re.search(r'\bNES=(?:SMB1|INES)\b',reply) or
                                            'MDX-KARAOKE/1 RAM-UPLOAD UBOOT=SERIAL COMMIT=BLOCKED' in reply or
                                            'MOD-EDITOR/1 RAM-TRANSFER UBOOT=SERIAL COMMIT=BLOCKED' in reply or
-                                           doom_profile):
+                                           doom_profile)):
                     break
             else:
                 raise ValueError('FM-1 serial HELLO not confirmed')
             if op == 'serial_status':
                 require(len(transcript) <= 65536, 'Live serial transcript exceeded bound')
-                if doom_profile:
+                if hs_phy_profile:
+                    profile, command = 'USB1-PHY-PROBE/1', 'USB PHY STATUS'
+                elif doom_profile:
                     profile, command = 'DOOM-FM1/1', 'DOOM STATUS'
                 elif 'MOD-EDITOR/1 RAM-TRANSFER' in reply:
                     profile, command = 'MOD-EDITOR/1', 'MOD STATUS'
@@ -494,11 +576,30 @@ def serial_action(op, run):
                     require(len(transcript) <= 65536, 'Live serial transcript exceeded bound')
                 # Live playback, edits and reported faults are diagnostic data.
                 # This operation sends no STOP/UBOOT and grants no boot permit.
-                return {'serial_hello_verified': True, 'profile': profile, 'port': name,
-                        'status_command': command,
-                        'samples': live_status_samples(observation, profile),
-                        'transcript': transcript, 'diagnostic_only': True, 'boot_verified': False}
+                samples = live_status_samples(observation, profile)
+                result = {'serial_hello_verified': True, 'profile': profile, 'port': name,
+                          'status_command': command, 'samples': samples,
+                          'transcript': transcript, 'diagnostic_only': True, 'boot_verified': False}
+                if hs_phy_profile:
+                    result.update(high_speed_phy_negotiated=samples[-1]['status'] == 4,
+                                  high_speed_enumeration_verified=False,
+                                  usb0_restored_verified=False)
+                return result
             if op == 'observe':
+                if hs_phy_profile:
+                    for _ in range(4):
+                        port.write(b'USB PHY STATUS\n'); port.flush()
+                        transcript += capture(port, 1)
+                        require(len(transcript) <= 65536, 'USB PHY transcript exceeded bound')
+                    report, first, last = hs_phy_status_progress(transcript)
+                    return {'serial_hello_verified': True, 'profile': 'USB1-PHY-PROBE/1',
+                            'port': name, 'report': report,
+                            'uptime_first': first['uptime'], 'uptime_last': last['uptime'],
+                            'stage': last['stage'], 'usb0_restored_verified': True,
+                            'high_speed_phy_negotiated': report['status'] == 4,
+                            'high_speed_enumeration_verified': False,
+                            'note': 'Bounded USB1 PHY probe and restored USB0 task telemetry; '
+                                    'USB1 descriptors and transfers were not exercised.'}
                 if doom_profile:
                     observation = ''
                     for _ in range(4):
@@ -561,7 +662,11 @@ def serial_action(op, run):
                         'frames_first': frames[0], 'frames_last': frames[-1],
                         'physical_display_audio_verified': False,
                         'note': 'Serial capture only; inspect counters and physical screen/audio.'}
-            if doom_profile:
+            if hs_phy_profile:
+                # The bounded boot probe already disconnected/held USB1 before
+                # USB0 HELLO became available. This profile has no TEST worker.
+                pass
+            elif doom_profile:
                 port.write(b'DOOM STOP\n'); port.flush()
                 status = capture(port, 2); transcript += status
                 for _ in range(6):
@@ -703,6 +808,22 @@ class Session:
                 require(sha(helper.read_bytes()) == HELPER_SHA, 'Helper hash mismatch')
                 execute_cli(target['DeviceID'], ['help'], run / 'helper.log', 'load')
                 require(disk() == target, 'USB identity changed after helper upload')
+                verified_preflight = self.root / self.state['baseline_file']
+                if op == 'flash':
+                    # One fresh full read after the single pinned helper upload,
+                    # before handing any sectors to the existing erase/writer.
+                    # Retry/recovery retain their established partial-write rules.
+                    verified_preflight = run / 'preflight-current.bin'
+                    execute_cli(target['DeviceID'], [f'read 0 {SIZE} {verified_preflight}'],
+                                run / 'preflight-current.log')
+                    require(disk() == target, 'USB identity changed during flash preflight read')
+                    current = verified_preflight.read_bytes()
+                    require(len(current) == SIZE and sha(current) == sha(base) and current == base,
+                            'Fresh current firmware differs from protected baseline; no erase/write permitted')
+                    attempt['fresh_preflight'] = {'sha256': sha(current), 'size': len(current),
+                                                  'file': verified_preflight.name, 'target': target}
+                    (run / 'attempt.json').write_text(json.dumps(attempt, indent=2), encoding='utf-8')
+                    self.save()
                 if op == 'recover_flash':
                     current_path = run / 'current.bin'
                     execute_cli(target['DeviceID'], [f'read 0 {SIZE} {current_path}'], run / 'current.log')
@@ -724,7 +845,7 @@ class Session:
                 # erase/readback, directory-last and final verification are unchanged.
                 deployment_started = True
                 result = writer.deploy(target['DeviceID'], run, base, image, call=call,
-                    sectors=sectors, verified_preflight=self.root / self.state['baseline_file'], nes_cdc=True)
+                    sectors=sectors, verified_preflight=verified_preflight, nes_cdc=True)
                 require(result['status'] == 'written_and_readback_verified' and result['full_readback_count'] == 1,
                         'Verification incomplete')
                 require((run / 'final-1.bin').read_bytes() == image, 'Final read differs')

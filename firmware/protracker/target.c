@@ -20,6 +20,9 @@
 #include "controls.h"
 #include "bank.h"
 #include "audio_queue.h"
+#ifdef FM1_UVC_SCREEN
+#include "tracker_capture.h"
+#endif
 #include <stdio.h>
 #include <string.h>
 
@@ -58,7 +61,18 @@ static uint32_t scan_retry_at,encoder_sequence;
 #else
 #define UI_STRIP_ROWS 8u
 #endif
+#ifdef FM1_UVC_SCREEN
+/* CPU-only render scratch. The LCD transport copies these bytes into its
+ * separately owned wire frame; USB DMA must remain in its normal RAM region.
+ * This section is cleared by the stock cache-RAM BSS startup closure. */
+#define TRACKER_CPU_SCRATCH __attribute__((section(".memp_memory_x"), aligned(4)))
+static uint8_t row_pixels[UI_STRIP_ROWS*480u] TRACKER_CPU_SCRATCH;
+static fm1_tracker_view capture_view TRACKER_CPU_SCRATCH;
+static uint8_t capture_rgb[FM1_UVC_ROWS_PER_PACKET*480u] TRACKER_CPU_SCRATCH;
+static uint8_t capture_view_ready;
+#else
 static uint8_t row_pixels[UI_STRIP_ROWS*480u];
+#endif
 static volatile int lcd_error,key_error,audio_error;
 static int scan_timer;
 static void flush_audio(void);
@@ -173,6 +187,10 @@ static void shutdown(void){unsigned f;stop();if(scan_timer>0)sys_usec_timer_del(
     if(input_irq_registered)unrequest_irq(IRQ_SPI2_IDX,0);
     bit_clr_ie(IRQ_ALNK_IDX,0);f=take(&audio_lock);audio_enabled=0;release(&audio_lock,f);
     unrequest_irq(IRQ_ALNK_IDX,0);iis_channel_off(8,0);iis_close(0);fm1_display_test_stop();
+#ifdef FM1_UVC_SCREEN
+    /* Quiescence includes the capture transport before CDC can arm UBOOT. */
+    fm1_uvc_capture_stop();
+#endif
     f=take(&control_lock);control.available=0;control.quiescent=1;release(&control_lock,f);
     for(;;)os_time_dly(100);
 }
@@ -211,7 +229,37 @@ static void ui_text(void){
     f=take(&control_lock);busy|=transfer.active || loaded!=song.loaded;
     release(&control_lock,f);
     if(busy){memset(&view,0,sizeof(view));strcpy(view.ui[0],"LOADING FROM USB PC");}
+#ifdef FM1_UVC_SCREEN
+    capture_view_ready=1;
+#endif
 }
+#ifdef FM1_UVC_SCREEN
+static void capture_step(uint32_t now){
+    fm1_uvc_stream *stream;fm1_uvc_write write;unsigned f;int begin,reserved,converted;
+    if(!capture_view_ready)return;
+    /* Adapter ISR and this task share CPU0. Only the bounded slot/state APIs
+     * run with interrupts masked; neither rendering nor snapshot copies do. */
+    local_irq_save(f);
+    if(!fm1_uvc_capture_enabled() || !(stream=fm1_uvc_stream_get())){
+        local_irq_restore(f);return;
+    }
+    begin=fm1_uvc_begin_frame(stream,now);
+    reserved=fm1_uvc_reserve_rows(stream,now,FM1_UVC_ROWS_PER_PACKET,&write);
+    local_irq_restore(f);
+    if(begin==FM1_UVC_OK)memcpy(&capture_view,&view,sizeof(capture_view));
+    if(reserved!=FM1_UVC_OK)return;
+    /* Each transmitted frame retains one logical screen snapshot, independent
+     * of the LCD frame currently being built or a playback-row transition. */
+    fm1_tracker_view_render(&capture_view,write.first_row,write.rows,capture_rgb);
+    converted=fm1_uvc_rgb565be_to_yuy2(write.bytes+FM1_UVC_HEADER_BYTES,
+        capture_rgb,(uint32_t)write.rows*FM1_UVC_WIDTH);
+    now=timer_get_ms();
+    local_irq_save(f);
+    if(converted==FM1_UVC_OK)(void)fm1_uvc_publish_rows(stream,now,&write);
+    else (void)fm1_uvc_cancel_rows(stream,now,&write);
+    local_irq_restore(f);
+}
+#endif
 #ifndef FM1_LCD_ASYNC
 static void ui_refresh(void){
     ui_text();
@@ -540,6 +588,12 @@ __attribute__((noinline,used)) static void fm1_peripheral_task(void *u){
             }
 #endif
         }
+#ifdef FM1_UVC_SCREEN
+        /* Keep LCD work first and attempt at most two video rows per loop.
+         * One-shot previews also keep their audio headroom; backpressure and
+         * an inactive host simply defer capture without waits or retries. */
+        if(queued>=1470u || (!running && !player.preview_active))capture_step(timer_get_ms());
+#endif
         wdt_clear();
 #ifdef FM1_LCD_ASYNC
         /* The NES 30 fps path yields without a 10 ms sleep. That also keeps

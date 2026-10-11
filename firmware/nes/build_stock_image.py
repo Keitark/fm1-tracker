@@ -130,9 +130,9 @@ def _replace_application(raw,app):
     return candidate
 
 
-def build_candidate(raw,elf,app,require_peripherals=True,rom='rom50',display_only=False,usb_only=False,usb_peripheral_tests=False,usb_nes=False,usb_mdx=False,usb_audio=False,usb_mod=False):
+def build_candidate(raw,elf,app,require_peripherals=True,rom='rom50',display_only=False,usb_only=False,usb_peripheral_tests=False,usb_nes=False,usb_mdx=False,usb_audio=False,usb_mod=False,usb_hs_phy_probe=False,usb_uvc_screen=False):
     static=audit(elf,app,require_peripherals=require_peripherals,rom=rom,display_only=display_only,
-                 usb_only=usb_only,usb_peripheral_tests=usb_peripheral_tests,usb_nes=usb_nes,usb_mdx=usb_mdx,usb_audio=usb_audio,usb_mod=usb_mod,require_boot_trace=usb_only,require_board_power=usb_only)
+                 usb_only=usb_only,usb_peripheral_tests=usb_peripheral_tests,usb_nes=usb_nes,usb_mdx=usb_mdx,usb_audio=usb_audio,usb_mod=usb_mod,usb_hs_phy_probe=usb_hs_phy_probe,usb_uvc_screen=usb_uvc_screen,require_boot_trace=usb_only,require_board_power=usb_only)
     original=BACKUP.read_bytes()
     require(raw[:AREA]==original[:AREA],'Boot/header/config differs from audited bootloader')
     _,boot_report=decode_boot(original)

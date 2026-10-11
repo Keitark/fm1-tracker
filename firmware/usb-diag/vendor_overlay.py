@@ -253,7 +253,7 @@ int fm1_cdc_ready(usb_dev id) {
 '''
     return text
 
-def device(text):
+def device(text, uvc_screen=False):
     # CDC-only: do not pull video/audio/host header trees into this build.
     for name in ('usb/device/msd.h','usb/scsi.h','usb/device/hid.h','usb/device/uac_audio.h',
                  'usb/device/slave_uvc.h','usb/device/printer.h'):
@@ -268,6 +268,15 @@ def device(text):
     text=once(text,'    usb_g_isr_reg(usb_id, 3, 0);','    usb_g_isr_reg(usb_id, 3, 0);\n    return 0;')
     text=once(text,'    usb_device_init(usb_id);\n    user_setup_filter_install(usb_id2device(usb_id));\n    return 0;',
                     '    if(!fm1_cdc_allocated(usb_id))return -3;\n    return usb_device_init(usb_id);')
+    if uvc_screen:
+        # Optional local screen function, appended after CDC registration and
+        # before usb_setup_init builds the descriptor and enables attachment.
+        # The default/HS diagnostic overlay stays byte-for-byte unchanged.
+        text='#include "fm1_uvc.h"\n'+text
+        text=once(text,'        cdc_register(usb_id);', '''        cdc_register(usb_id);
+        usb_add_desc_config(usb_id, class_index++, fm1_uvc_desc_config);''')
+        text=once(text,'    if (class == 0) {', '''    if (class == 0) {
+        fm1_uvc_capture_stop();''')
     return text
 
 if __name__=='__main__':

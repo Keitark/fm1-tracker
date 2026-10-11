@@ -1,5 +1,16 @@
 # FM-1 USB diagnostic firmware
 
+## Optional tracker screen over USB (2026-10-11)
+
+The current tracker has an opt-in `--uvc-screen` profile: USB0 CDC plus a
+240×240 YUY2 UVC1.0 screen stream with a fixed 5 fps mode. The profile, host
+viewing instructions, `USB VIDEO STATUS` command and recovery behavior are in
+[the USB video guide](../usb-video/README.md). Hardware acceptance is pending;
+the historical USB-only diagnostic notes below do not qualify this new image.
+
+`--hs-phy-probe` is a separate temporary USB1 negotiation diagnostic. It does
+not install a video class and cannot be combined with `--uvc-screen`.
+
 Latest profile (2026-09-28): **peripheral-test v1, built/offline-tested, not flashed**.
 See [PERIPHERAL_TEST.md](PERIPHERAL_TEST.md) for LCD, audio, key and knob commands,
 build instructions, safety limits and remaining hardware checks.

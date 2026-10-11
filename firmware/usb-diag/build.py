@@ -21,6 +21,10 @@ def main():
     p.add_argument('--controller',type=int,choices=(0,),required=True,
                    help='Only USB0 has a reviewed link contract; connector routing is still unverified')
     p.add_argument('--out',type=Path,required=True)
+    p.add_argument('--hs-phy-probe',action='store_true',
+                   help='Temporary bounded USB1 negotiation probe before unchanged USB0 CDC; no USB1 class or video')
+    p.add_argument('--uvc-screen',action='store_true',
+                   help='Optional full-speed 240x240 YUY2 5fps tracker screen with CDC recovery')
     p.add_argument('--peripheral-tests',action='store_true')
     p.add_argument('--mdx',action='store_true',help='Standalone flash-demo MDX/PDX karaoke player with volatile CDC uploads')
     p.add_argument('--mod',action='store_true',help='ProTracker-style four-channel MOD editor with volatile CDC file transfer')
@@ -53,6 +57,10 @@ def main():
     p.add_argument('--lcd-stock-dma',action='store_true',help='Stock setup-before-delay, DMA parameters, fixed register snapshots; requires --lcd-stock-fill')
     p.add_argument('--lcd-stock-sequence',action='store_true',help='Stock PA2/GPIO setup, scheduler delays and 40-byte DMA black first fill; requires --lcd-stock-dma')
     a=p.parse_args(); out=a.out.resolve(); out.mkdir(parents=True,exist_ok=True)
+    if a.hs_phy_probe and (a.peripheral_tests or a.mdx or a.mod or a.nes_smb1):
+        p.error('--hs-phy-probe is a separate USB-only diagnostic')
+    if a.uvc_screen and (not a.mod or not a.lcd_async or a.mod_source_dir or a.hs_phy_probe):
+        p.error('--uvc-screen requires the current --mod --lcd-async profile')
     if (a.mdx or a.mod) and (a.nes_smb1 or not a.lcd_stock_sequence):p.error('Player profiles require stock LCD sequence and exclude NES')
     if a.mdx and a.mod:p.error('Select only one player profile')
     if a.mod and not a.peripheral_tests:p.error('--mod requires --peripheral-tests')
@@ -98,6 +106,8 @@ def main():
     power=verify(STOCK.read_bytes())
     text=MAKE.read_text(encoding='utf-8');flags=make_list(text,'CFLAGS')
     defines=make_list(text,'DEFINES')+['-DFM1_USB_CONTROLLER='+str(a.controller)]
+    if a.hs_phy_probe:defines+=['-DFM1_USB_HS_PHY_PROBE=1']
+    if a.uvc_screen:defines+=['-DFM1_UVC_SCREEN=1']
     if a.peripheral_tests:defines+=['-DFM1_PERIPHERAL_TESTS=1']
     if a.mdx:defines+=['-DFM1_MDX_PLAYER=1','-DFM1_TARGET_PI32V2=1','-DFM1_KEYSCAN_DMA2=1','-DFM1_KEYSCAN_IRQ=1','-DFM1_KEYSCAN_PACED=1']
     if a.mod:defines+=['-DFM1_MOD_PLAYER=1','-DFM1_TARGET_PI32V2=1','-DFM1_KEYSCAN_DMA2=1','-DFM1_KEYSCAN_IRQ=1','-DFM1_KEYSCAN_PACED=1']
@@ -129,10 +139,16 @@ def main():
     sources=[s for s in sources if s.name not in ('app_main.c','board.c','cpp_run_init.c')]
     sources += [NES/'boot'/n for n in ('board.c','boot_compat.c','boot_trace.c','board_power.c')]
     sources += [HERE/n for n in ('app_main.c','protocol.c','descriptors.c','usb_policy.c','dma.c','rx_channel.c','boot_entry.c')]
+    if a.hs_phy_probe:sources.append(HERE/'hs_phy_probe.c')
     if a.peripheral_tests:
         sources += [HERE/n for n in (('peripheral_logic.c',) if (a.mdx or a.mod) else ('peripherals.c','peripheral_logic.c'))]
         sources += [NES/'boot/display_test.c',NES/'src/fm1_wl82_keyscan.c',NES/'src/fm1_stock_keys.c']
     speed_sources=set()
+    if a.uvc_screen:
+        video=HERE.parent/'usb-video'
+        includes=['-I'+str(video)]+includes
+        video_sources=[video/n for n in ('uvc_stream.c','uvc_control.c','fm1_uvc.c')]
+        sources+=video_sources;speed_sources.update(video_sources)
     if a.mdx:
         mdx=HERE.parent/'mdx'
         includes=['-I'+str(mdx/n) for n in ('include','vendor/retrofm','vendor/mdxtools')]+includes
@@ -222,7 +238,7 @@ def main():
         sources[sources.index(original)]=target
         speed_sources.remove(original);speed_sources.add(target)
         overlays[str(original)]=hashlib.sha256(original.read_bytes()).hexdigest()
-    for name,transform in (('cdc.c',vendor_overlay.cdc),('usb_device.c',vendor_overlay.device),('msd_upgrade.c',vendor_overlay.boot_entry)):
+    for name,transform in (('cdc.c',vendor_overlay.cdc),('usb_device.c',lambda text:vendor_overlay.device(text,uvc_screen=a.uvc_screen)),('msd_upgrade.c',vendor_overlay.boot_entry)):
         original=SDK/'apps/common/usb/device'/name
         target=out/('fm1-'+name);target.write_text(transform(original.read_text(encoding='utf-8')),encoding='utf-8')
         sources.append(target);overlays[str(original)]=hashlib.sha256(original.read_bytes()).hexdigest()
@@ -232,6 +248,7 @@ def main():
     used.write_text(used.read_text()+'fm1_usb_rx_irq\ngo_mask_usb_updata\nnvram_set_boot_state\n')
     if a.mdx:used.write_text(used.read_text()+'fm1_mdx_load\nfm1_mdx_render\nfm1_mdx_usb_command\nfm1_wl82_keyscan_async_raw\n')
     if a.mod:used.write_text(used.read_text()+'fm1_mod_open\nfm1_mod_render\nfm1_mod_usb_command\nfm1_wl82_keyscan_async_raw\n')
+    if a.uvc_screen:used.write_text(used.read_text()+'fm1_uvc_setup_init\nfm1_uvc_desc_config\nfm1_uvc_capture_stop\nfm1_uvc_dma\nfm1_uvc_state\nfm1_uvc_video_descriptor\n')
     if a.nes_smb1:used.write_text(used.read_text()+'fm1_board_run\nfm1_display_write\nfm1_audio_startup_process24\nfm1_nes_run\n')
     ld=(out/'sdk.ld').read_text()
     for old,new in (('*(.data)','*(.data .data.*)'),('*(.bss)','*(.bss .bss.*)')):
@@ -260,10 +277,15 @@ def main():
     app=out/'fm1-usb-diag.app.bin';app.write_bytes(b''.join(parts))
     (out/'symbols.txt').write_text(run([TC/'llvm-nm.exe','-n','-S',elf]))
     (out/'disassembly.asm').write_text(run([TC/'llvm-objdump.exe','-d','-mcpu=r3',elf]))
-    report=audit(elf.read_bytes(),app.read_bytes(),usb_only=True,usb_peripheral_tests=a.peripheral_tests,usb_nes=a.nes_smb1,usb_mdx=a.mdx,usb_mod=a.mod,rom='smb1' if a.nes_smb1 else 'rom50',require_boot_trace=True,require_board_power=True)
+    report=audit(elf.read_bytes(),app.read_bytes(),usb_only=True,usb_peripheral_tests=a.peripheral_tests,usb_nes=a.nes_smb1,usb_mdx=a.mdx,usb_mod=a.mod,usb_hs_phy_probe=a.hs_phy_probe,usb_uvc_screen=a.uvc_screen,rom='smb1' if a.nes_smb1 else 'rom50',require_boot_trace=True,require_board_power=True)
     (out/'static-audit.json').write_text(json.dumps(report,indent=2)+'\n')
     result={'status':'LINKED_USB_DIAGNOSTIC_UNTESTED','flashable':False,'usb_controller_candidate':a.controller,
             'controller_routing_verified':False,'sdk_commit':SDK_PIN,'application_bytes':app.stat().st_size,
+            'usb_hs_phy_probe':a.hs_phy_probe,
+            'usb_uvc_screen':a.uvc_screen,
+            'uvc_mode':'240x240 YUY2 5fps, USB0 full-speed EP84; hardware qualification pending' if a.uvc_screen else None,
+            'probe_controller_candidate':1 if a.hs_phy_probe else None,
+            'probe_contract':'bounded boot PHY negotiation only; no USB1 class/DMA/IRQ; always return to USB0' if a.hs_phy_probe else None,
             'application_sha256':hashlib.sha256(app.read_bytes()).hexdigest(),
             'update_transport':'CDC verify-only; not stored or installed','flash_commit':'BLOCKED_STOCK_LAYOUT_UNQUALIFIED',
             'device_operations_performed':False,'static_audit':report,'power_evidence':power,
@@ -313,6 +335,8 @@ def main():
             inputs=[a.mod_bank.resolve(),mod_tools/'tools/fm1_bank.py']
             result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in inputs})
         result['profile']='MOD_EDITOR_CANDIDATE'
+    if a.uvc_screen:
+        result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in video.glob('*.h')})
     manifest.write_text(json.dumps(result,indent=2)+'\n');log.close()
     print(json.dumps({k:v for k,v in result.items() if k not in ('static_audit','source_sha256','archive_sha256','power_evidence','vendor_overlay_sources')},indent=2))
 
