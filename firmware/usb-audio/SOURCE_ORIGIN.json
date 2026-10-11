@@ -1,0 +1,24 @@
+{
+  "repository": "https://github.com/Keitark/fm1-public",
+  "commit": "d60e1b190e785ef83490ad6716e9c8ecf1e6013d",
+  "license": "GPL-3.0-only",
+  "files": {
+    "firmware/nes/audit_usb_packet.py": "f6c6f840d4609497818db506eee3a22fb9feda65d3f8c741c22de2c538fec1e6",
+    "firmware/usb-audio/bridge.c": "0a81c337ae7ce4d7d68e60ea21206fbbf9e681814d4973d4f26dfa95712273cc",
+    "firmware/usb-audio/bridge.h": "bde13cf94738f24637b08704d1fa8d4bd374f51dbef4d9ea46346912aab67ac3",
+    "firmware/usb-audio/profile.c": "8173624820c40fbdf2d008387e1c03b313029aebd171f2706c03aca4e4ec8376",
+    "firmware/usb-audio/target.c": "4a181e5f236bb70c1c4af00a9ca0eeed24190860910c1fd9858604785e703190",
+    "firmware/usb-audio/target.h": "3be269dd7f379fa4d3c1d0ea94e4ddfc2227476936473b3e475b9b23e4c69bb7",
+    "firmware/usb-audio/target_fake.h": "a860e2ab6352aafdd9130fa1f12ca6ccfd247e38d4140afd6f416d87b29bb353",
+    "firmware/usb-audio/test_bridge.c": "a9ffb9401d7abaf580d7fa3a950ca1cda5df413e445492fb2702b8b305ed2bf8",
+    "firmware/usb-audio/test_profile.py": "0b8ae27a1cc9c5f046419a8f303e67a90702e946b780e4a796a898c66326a3c4",
+    "firmware/usb-audio/test_stall.c": "de1108b07dd737108d6ea535547b066fbd5cf762bae8814a7e6d3fa42aa34394",
+    "firmware/usb-audio/test_target.c": "444e8fbbb3adf724a9982b7f7525e3de24cc22462cf4f0544775b2f8f7646415",
+    "firmware/usb-diag/packet.c": "054d41a1df9bf3c674175aab1855c89b0c4687a81cb050d90ebf2791ff354aeb",
+    "firmware/usb-diag/packet.h": "869cf1e220fc2db7a9b1afd44dc29f76b26267b40c1e6bfa793e3eef263d3145",
+    "firmware/usb-diag/packet_fake.h": "60d2007a52bf45184bd9696f68f709ba08fb9904837fd3a96daddeaf46939edd",
+    "firmware/usb-diag/test_packet.c": "1d97b4c102772ce086ae1b5471b4a4066cac6f93927ce5154df7bbf052049b57",
+    "firmware/usb-diag/tests/usb_policy_tests.c": "6ea5dae923240d6134ca32722ce79125552b7d42d25180336e14518a9871076b",
+    "firmware/usb-diag/usb_policy.c": "f8595c0c914928dac6ec79707c8d600a4ed5bfe30292ff3f0a10550e296d1df2"
+  }
+}

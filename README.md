@@ -3,6 +3,16 @@
 ProTracker-style four-channel MOD tracker firmware for the M-VAVE FM-1.
 Start with [tracker controls and status](firmware/protracker/README.md).
 
+The [FM1 Forge diagnostic firmware and module starter](firmware/forge/README.md)
+adds a shared HAL for all mapped buttons/keys, encoders and master volume,
+asynchronous LCD rendering, bounded test tones, optional USB audio, and
+configuration-driven firmware projects. The
+[Forge plugin integration](https://github.com/Keitark/fm1-marketplace-plugin)
+hosts its native Codex panel and MCP service on ChatGPT Sites. Forge builds and
+offline packages remain separate from device transfer and physical acceptance.
+The [2026-10-11 Forge handoff](docs/FM1_FORGE_HANDOFF_20261011.md) records the
+exact private candidate, validation and remaining first-transfer steps.
+
 This workspace contains a read-only research baseline for the M-VAVE FM-1 pocket FM synthesizer, captured on 2026-08-12.
 
 Start with [docs/FM1_RESEARCH.md](docs/FM1_RESEARCH.md). It records the verified hardware, AC7911B8 specifications, stock V14/V15 firmware layout, MIDI surface, updater behavior, confidence levels, and a conservative route toward replacement firmware.
@@ -18,7 +28,7 @@ original 29-sample breakbeat bank and a self-contained tutorial MOD. Its
 candidate renderer. [Milestone evidence](firmware/protracker/MILESTONE_2.md)
 separates host/build verification from physical acceptance.
 
-**Installed hardware is v32**, flashed on 2026-10-05: the v31 editor with
+The **2026-10-05 v32 deployment** installed the v31 editor with
 State of the Art as the boot default, including its samples. The separate
 original 29-sound bank remains included. [Deployment evidence](docs/MOD_STOA_DEFAULT_V32_DEPLOYMENT.md)
 records 119-sector/full-image verification and an exact boot-MOD CRC match.
@@ -31,6 +41,9 @@ acceptance checks. The v30 encoder fix is retained.
 
 - `firmware/protracker/`: tracker source, host tests, original sample bank,
   controls, view previews, and the isolated v29 profile.
+- `firmware/forge/`: diagnostic renderer, HAL ABI, safe project generator,
+  configuration-driven builder and host behavior tests.
+- `firmware/usb-audio/`: attributed shared UAC1 transport and bounded audio bridge.
 - `firmware/usb-diag/`, `firmware/nes/`, and `tools/jieli-wl82/`: shared board
   support, build/audit code, USB tools, and protected flashing workflow.
 - `docs/`: hardware research and bench notes.

@@ -178,7 +178,7 @@ def boot_entry(text):
     return once(text,'void __attribute__((weak)) nvram_set_boot_state(u32 state) {}',
                 'extern void nvram_set_boot_state(u32 state);')
 
-def cdc(text):
+def cdc(text, composite=False):
     text='#include "usb_control.h"\n#include "boot_entry.h"\n'+text
     text=once(text,'    u8 bmTransceiver;','    volatile u8 bmTransceiver;')
     text=once(text,'static struct usb_cdc_gadget *cdc_hdl[USB_MAX_HW_NUM];',
@@ -251,9 +251,22 @@ int fm1_cdc_ready(usb_dev id) {
            (cdc_hdl[id]->bmTransceiver & 17)==17;
 }
 '''
+    if composite:
+        text='/* GPL-3.0-only packet adaptation from Keitark/fm1-public d60e1b1. */\n#include "packet.h"\n'+text
+        text=function(text,'cdc_write_data', '''u32 fm1_cdc_write_packet(const usb_dev usb_id, u8 *buf, u32 len, unsigned generation)
+{
+    if(usb_id!=FM1_USB_CONTROLLER || !cdc_hdl[usb_id] || !len || len>=MAXP_SIZE_CDC_BULKIN ||
+       (cdc_hdl[usb_id]->bmTransceiver & (BIT(0)|BIT(4)))!=(BIT(0)|BIT(4)) ||
+       usb_id2device(usb_id)->bDeviceStates!=USB_CONFIGURED)return 0;
+    return fm1_usb_packet_write(usb_id,CDC_DATA_EP_IN,buf,len,&fm1_cdc_generation,generation);
+}
+u32 cdc_write_data(const usb_dev usb_id, u8 *buf, u32 len)
+{
+    return fm1_cdc_write_packet(usb_id,buf,len,fm1_cdc_generation);
+}''')
     return text
 
-def device(text):
+def device(text, composite=False):
     # CDC-only: do not pull video/audio/host header trees into this build.
     for name in ('usb/device/msd.h','usb/scsi.h','usb/device/hid.h','usb/device/uac_audio.h',
                  'usb/device/slave_uvc.h','usb/device/printer.h'):
@@ -268,6 +281,10 @@ def device(text):
     text=once(text,'    usb_g_isr_reg(usb_id, 3, 0);','    usb_g_isr_reg(usb_id, 3, 0);\n    return 0;')
     text=once(text,'    usb_device_init(usb_id);\n    user_setup_filter_install(usb_id2device(usb_id));\n    return 0;',
                     '    if(!fm1_cdc_allocated(usb_id))return -3;\n    return usb_device_init(usb_id);')
+    if composite:
+        text=once(text,'        cdc_register(usb_id);', '''        cdc_register(usb_id);
+        extern u32 fm1_uac_desc_config(usb_dev,u8 *,u32 *);
+        usb_add_desc_config(usb_id,class_index++,fm1_uac_desc_config);''')
     return text
 
 if __name__=='__main__':

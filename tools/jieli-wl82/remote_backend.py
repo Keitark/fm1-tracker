@@ -231,7 +231,7 @@ class WindowsBackend:
         if final.get('blocked') or final.get('needs_observation') or final.get('reset_pending'):
             return {'ok': False, 'error': 'Write/readback completed but startup remains unverified', 'data': {'steps': steps}}
         live = call('serial_status')
-        expected = {'nes': 'NES', 'doom': 'DOOM-FM1/1', 'mdx': 'MDX-KARAOKE/1',
+        expected = {'diagnostics': 'FM1-FORGE/1', 'nes': 'NES', 'doom': 'DOOM-FM1/1', 'mdx': 'MDX-KARAOKE/1',
                     'buddha': 'MOD-EDITOR/1', 'protracker': 'MOD-EDITOR/1'}[bundle['profile']]
         profile = live.get('data', {}).get('result', {}).get('profile')
         # Match the actual HELLO identifier, never infer success from an app card.

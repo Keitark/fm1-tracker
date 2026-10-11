@@ -305,6 +305,25 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(result['data']['serial_boot_verified'])
         self.assertFalse(result['data']['physical_acceptance'])
 
+    def test_forge_diagnostics_requires_exact_live_firmware_identity(self):
+        bundle = self.bundle()
+        bundle.update(id='factory-diag', profile='diagnostics', title='Forge diagnostics')
+        self.adapter.install_catalog(bundle)
+        for identity in ('FM1-FORGE/1', 'NES', 'FM1-FORGE/2'):
+            with self.subTest(identity=identity):
+                calls = []
+                def pipe(operation, request=None):
+                    calls.append(operation)
+                    return {'ok': True, 'data': {'result': {'profile': identity}}}
+                with patch.object(self.adapter, '_pipe', side_effect=pipe), \
+                     patch.object(self.adapter, 'status', return_value={'uboot_disks': [{'DeviceID': 'fake'}]}):
+                    result = self.adapter.execute('switch_app', catalog_id='factory-diag', entry_method='already_uboot')
+                self.assertEqual(result['ok'], identity == 'FM1-FORGE/1')
+                self.assertEqual(calls, ['plan', 'flash', 'reset', 'observe', 'serial_status'])
+                if result['ok']:
+                    self.assertEqual(result['data']['catalog_id'], 'factory-diag')
+                    self.assertFalse(result['data']['physical_acceptance'])
+
     def test_switch_from_running_app_uses_existing_serial_uboot_transition(self):
         self.adapter.install_catalog(self.bundle())
         calls = []

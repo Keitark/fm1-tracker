@@ -91,6 +91,11 @@ def require(ok, message):
 
 
 def call_target(code, address):
+    if len(code) == 2:
+        require(code[0]&0x8f==1 and code[1]&0xe0==0x80,'Power compact call opcode changed')
+        relative=((code[0]>>4)&7)*32+(code[1]&31)
+        if relative&128:relative-=256
+        return address+2+relative*2
     if len(code) == 6:
         require(code[:2] == b'\x80\xff', 'Power long call opcode changed')
         return address + 6 + struct.unpack_from('<i', code, 2)[0]
@@ -102,7 +107,7 @@ def call_target(code, address):
     return address + 4 + relative * 2
 
 
-def audit_power(symbols, sections, code_at, required=False, usb_only=False, usb_audio=False):
+def audit_power(symbols, sections, code_at, required=False, usb_only=False, usb_audio=False,factory_diag=False):
     def value(name):
         require(name in symbols, 'Missing board power symbol ' + name)
         return symbols[name][0]
@@ -143,7 +148,7 @@ def audit_power(symbols, sections, code_at, required=False, usb_only=False, usb_
     # against their symbols before restoring historical encodings for hashing.
     base=value('ota_status')
     layout=tuple(value(n)-base for n in ('lrc.0','lrc.6','sys_low_power'))
-    if usb_audio:
+    if usb_audio and not factory_diag:
         # Reviewed original composite and composite-with-screenshot layouts.
         require(layout in ((224,236,260),(228,240,264),(260,272,296)),
                 'Composite audio power merged-global layout changed')
@@ -153,8 +158,8 @@ def audit_power(symbols, sections, code_at, required=False, usb_only=False, usb_
         (0x3c0,'sys_low_power',b'\xd0\xec',0x80,bytes.fromhex('d0 ec 81 36')),
     ):
         delta=value(target)-base
-        if usb_audio:
-            require(delta%4==0,'Composite audio power state alignment changed')
+        if usb_audio or factory_diag:
+            require(0<=delta<512 and delta%4==0,'Composite audio power state offset/alignment changed')
         elif usb_only and delta==256:
             # Screenshot CDC link: reviewed sys_low_power store d1 ec 81 30
             # at power_init+0x3c0, with LRC globals at+220/+232.
@@ -170,10 +175,11 @@ def audit_power(symbols, sections, code_at, required=False, usb_only=False, usb_
             # bypass for arbitrary power instructions.
             require(value('lrc.1')==value('lrc.0')+4 and value('lrc.2')==value('lrc.0')+8,
                     'Power LRC state layout changed')
-            if usb_audio and layout==(260,272,296):
+            if (usb_audio and layout==(260,272,296)) or (factory_diag and delta>=256):
                 # The former mov+preincrement-store (6 bytes) is replaced by
                 # add-immediate+store (6 bytes), with identical destination.
-                require(code_at(start+0x0d4,6)==bytes.fromhex('01 e1 04 81 98 40'),
+                expected_add=bytes((1,0xe1,delta&255,0x80|(delta>>8),0x98,0x40))
+                require(code_at(start+0x0d4,6)==expected_add,
                         'Power merged-global target changed: lrc.0')
                 normalized[0x0d4:0x0da]=bytes.fromhex('81 16 5a ee 14 04')
                 continue

@@ -8,11 +8,11 @@ import re
 SIZE = 0x100000
 APP_START = 0x4120
 APP_END = APP_START + 584956
-PROFILES = ('nes', 'doom', 'mdx', 'buddha', 'protracker')
-TITLES = dict(nes='NES', doom='Doom', mdx='MDX Karaoke', buddha='Buddha Machine', protracker='ProTracker')
+PROFILES = ('nes', 'doom', 'mdx', 'buddha', 'protracker','diagnostics')
+TITLES = dict(nes='NES', doom='Doom', mdx='MDX Karaoke', buddha='Buddha Machine', protracker='ProTracker',diagnostics='FM1 FW Factory Diagnostics')
 DESCRIPTIONS = dict(nes='Play a packaged NES ROM.', doom='Explore a packaged Doom build.',
                     mdx='Play a packaged MDX music bank.', buddha='Loop and play a packaged chant.',
-                    protracker='Edit and play four-channel MOD songs.')
+                    protracker='Edit and play four-channel MOD songs.',diagnostics='Asset-free LCD, buttons, encoders, volume and key-tone diagnostics with CDC/optional UAC1 recovery.')
 
 
 def sha(data):

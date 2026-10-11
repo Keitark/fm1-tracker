@@ -118,10 +118,33 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(ValueError):worker.trusted_local(root)
             with self.assertRaises(ValueError):worker.schema({'op':'status','trusted_local':True})
 
+    def test_frozen_runtime_cannot_write_bytecode_or_mix_trusted_mode(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            self.assertFalse(worker.frozen_runtime(root))
+            for value in (False,True):
+                (root/'session.json').write_text(json.dumps({'freeze_python_runtime':value}))
+                self.assertEqual(worker.frozen_runtime(root),value)
+                with patch.object(worker,'frozen_runtime',return_value=value),patch.object(worker,'trusted_local',return_value=False):
+                    self.assertEqual(worker.python_flags(),['-I','-S','-B','-u'] if value else ['-I','-S','-u'])
+            (root/'session.json').write_text(json.dumps({'freeze_python_runtime':'true'}))
+            with self.assertRaises(ValueError):worker.frozen_runtime(root)
+            with patch.object(worker,'frozen_runtime',return_value=True),patch.object(worker,'trusted_local',return_value=True),self.assertRaisesRegex(ValueError,'Conflicting'):
+                worker.python_flags()
+
     def test_current_profile_regeneration_reviewed_extent(self):
         import prepare_flash_request
         base=(worker.ROOT/'private-backups/nes-keyspi-dma2-enable-write-20260929-080037/final-2.bin').read_bytes()
         build=worker.ROOT/'firmware/usb-diag/build/nes-smb1-famicom-controls'
+        metadata=json.loads((build/'build-manifest.json').read_text())
+        # A preserved bench artifact must remain reproducible only against its
+        # frozen source closure. Current edits intentionally make that closure
+        # stale; verify the producer refuses it instead of relabeling/rebuilding
+        # historical bytes in this safety suite.
+        stale=any(worker.sha(Path(name).read_bytes())!=digest for field in ('source_sha256','archive_sha256','vendor_overlay_sources') for name,digest in metadata[field].items())
+        if stale:
+            with self.assertRaisesRegex(ValueError,'Stale source/archive/overlay'):prepare_flash_request.prepare(build,worker.sha(base))
+            return
         req=prepare_flash_request.prepare(build,worker.sha(base))
         self.assertEqual(req,prepare_flash_request.prepare(build,worker.sha(base)))
         image,sectors=worker.candidate(req,base)
@@ -600,7 +623,14 @@ class PipeTests(unittest.TestCase):
             server=subprocess.Popen([worker.PS,'-NoProfile','-File',str(here/'flash-session-server.ps1'),'-SessionRoot',str(root)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW)
             try:
                 deadline=time.monotonic()+10
-                while 'server_pid' not in json.loads((root/'session.json').read_text(encoding='utf-8-sig')):
+                while True:
+                    # The test server rewrites the descriptor during startup.
+                    # A short read can race that non-atomic setup write.
+                    try:
+                        descriptor=json.loads((root/'session.json').read_text(encoding='utf-8-sig'))
+                    except json.JSONDecodeError:
+                        descriptor={}
+                    if 'server_pid' in descriptor: break
                     if server.poll() is not None: self.fail(str(server.communicate()))
                     if time.monotonic()>deadline:self.fail('Server startup timeout')
                     time.sleep(.1)

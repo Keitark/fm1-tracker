@@ -5,6 +5,9 @@
 #include "protocol.h"
 #include <string.h>
 #include <stdio.h>
+#ifdef FM1_FORGE
+extern int fm1_forge_usb_command(const char *,uint32_t,fm1_diag_reply,void *);
+#endif
 #ifdef FM1_MDX_PLAYER
 #include "fm1_mdx_usb.h"
 #endif
@@ -46,6 +49,9 @@ static void command(fm1_diag_protocol *p, uint32_t now, fm1_diag_reply reply, vo
     if(!p->active && fm1_mod_usb_command(p->line,now,reply,ctx))return;
 #endif
     if(!strcmp(p->line,"HELLO")) {
+#ifdef FM1_FORGE
+        reply(ctx,"FM1DIAG/1 FM1-FORGE/1 UBOOT=SERIAL COMMIT=BLOCKED\n");return;
+#else
 #ifdef FM1_PERIPHERAL_TESTS
 #ifdef FM1_MDX_PLAYER
         reply(ctx,"FM1DIAG/1 MDX-KARAOKE/1 RAM-UPLOAD UBOOT=SERIAL COMMIT=BLOCKED\n");return;
@@ -65,7 +71,11 @@ static void command(fm1_diag_protocol *p, uint32_t now, fm1_diag_reply reply, vo
 #else
         reply(ctx,"FM1DIAG/1 USB-ONLY UPDATE=VERIFY-ONLY COMMIT=BLOCKED\n"); return;
 #endif
+#endif
     }
+#ifdef FM1_FORGE
+    if((!p->active && final) && fm1_forge_usb_command(p->line,now,reply,ctx))return;
+#endif
     if(!strcmp(p->line,"STATUS")) {
         snprintf(out,sizeof(out),"STATUS active=%u verified=%u bytes=%lu\n",
                  p->active,p->verified,(unsigned long)p->received); reply(ctx,out); return;
@@ -76,7 +86,9 @@ static void command(fm1_diag_protocol *p, uint32_t now, fm1_diag_reply reply, vo
     }
 #ifdef FM1_PERIPHERAL_TESTS
     if(!strcmp(p->line,"HELP")) {
-#ifdef FM1_NES_PLAYER
+#ifdef FM1_FORGE
+        fm1_forge_usb_command("FORGE HELP",now,reply,ctx);return;
+#elif defined(FM1_NES_PLAYER)
         reply(ctx,"TEST NES | TEST STOP | TEST STATUS; stop NES before other peripheral tests; UBOOT then UBOOT CONFIRM; LF-only\n");return;
 #elif defined(FM1_MOD_PLAYER)
         reply(ctx,"MOD STATUS | MOD NEW | MOD PLAY | MOD STOP | MOD BEGIN/DATA/END | MOD INFO/READ/SAVED | MOD ABORT; UBOOT then UBOOT CONFIRM; LF-only\n");return;
