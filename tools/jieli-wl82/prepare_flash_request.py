@@ -15,17 +15,35 @@ def prepare(folder, baseline_sha256, baseline=None):
     mdx = manifest.get('status') == 'LINKED_MDX_KARAOKE_UNTESTED'
     mod = manifest.get('status') == 'LINKED_USB_DIAGNOSTIC_UNTESTED' and manifest.get('mod') is True
     usb_audio = manifest.get('usb_audio', False)
+    hs_probe = manifest.get('usb_hs_phy_probe', False)
+    uvc_screen = manifest.get('usb_uvc_screen', False)
+    uac_capture = manifest.get('usb_uac_capture', False)
+    ipad_pad = manifest.get('usb_uvc_ipad_pad', False)
+    if type(ipad_pad) is not bool or (ipad_pad and not uvc_screen):
+        raise ValueError('iPad video padding requires explicit screen UVC')
+    if type(uac_capture) is not bool or (uac_capture and (not mod or hs_probe or usb_audio or
+            manifest.get('mod_source_dir') is None or manifest.get('usb_controller_candidate') != 0)):
+        raise ValueError('Tracker UAC capture requires the explicit current USB0 MOD profile')
+    if type(uvc_screen) is not bool or (uvc_screen and (not mod or hs_probe or
+            not manifest.get('lcd_async') or manifest.get('usb_controller_candidate') != 0)):
+        raise ValueError('Screen UVC requires the explicit USB0 asynchronous MOD profile')
+    if type(hs_probe) is not bool:
+        raise ValueError('USB1 PHY probe profile must be explicit boolean')
     if type(usb_audio) is not bool or (usb_audio and not mdx):
         raise ValueError('Composite audio requires an explicit MDX build profile')
-    if mod:
-        if not manifest.get('peripheral_tests') or manifest.get('nes_smb1') or manifest.get('mdx'):
+    if mod or hs_probe:
+        if hs_probe and (mod or mdx or manifest.get('status') != 'LINKED_USB_DIAGNOSTIC_UNTESTED' or
+                manifest.get('peripheral_tests') or manifest.get('nes_smb1') or manifest.get('mdx') or usb_audio or
+                manifest.get('usb_controller_candidate') != 0 or manifest.get('probe_controller_candidate') != 1):
+            raise ValueError('USB1 PHY probe requires its audited USB0-only diagnostic')
+        if mod and (not manifest.get('peripheral_tests') or manifest.get('nes_smb1') or manifest.get('mdx')):
             raise ValueError('Only the audited standalone MOD editor build is accepted')
         if type(baseline) is not bytes or len(baseline) != 0x100000 or \
                 hashlib.sha256(baseline).hexdigest() != baseline_sha256:
-            raise ValueError('MOD editor requires the exact verified current baseline')
+            raise ValueError('MOD/probe requires the exact verified current baseline')
     elif not mdx and (manifest.get('status') != 'LINKED_USB_DIAGNOSTIC_UNTESTED' or
             not manifest.get('nes_smb1') or not manifest.get('peripheral_tests')):
-        raise ValueError('Only audited NES+CDC, standalone MDX, or standalone MOD builds are accepted')
+        raise ValueError('Only audited NES+CDC, standalone MDX/MOD, or bounded PHY probe builds are accepted')
     for field in ('source_sha256', 'archive_sha256', 'vendor_overlay_sources'):
         for name, digest in manifest[field].items():
             if hashlib.sha256(Path(name).read_bytes()).hexdigest() != digest:
@@ -38,13 +56,14 @@ def prepare(folder, baseline_sha256, baseline=None):
     sys.path.insert(0, str(ROOT / 'firmware/nes'))
     import build_stock_image as pack
     image, report = pack.build_candidate(pack.V14_BACKUP.read_bytes(), elf, app,
-        require_peripherals=False, usb_only=True, usb_peripheral_tests=True,
-        usb_nes=not (mdx or mod), usb_mdx=mdx, usb_mod=mod,
-        usb_audio=usb_audio, rom='rom50' if mod else 'smb1')
-    if mod:
+        require_peripherals=False, usb_only=True, usb_peripheral_tests=not hs_probe,
+        usb_nes=not (mdx or mod or hs_probe), usb_mdx=mdx, usb_mod=mod,
+        usb_audio=usb_audio, usb_hs_phy_probe=hs_probe, usb_uvc_screen=uvc_screen,usb_uac_capture=uac_capture,usb_uvc_ipad_pad=ipad_pad,
+        rom='rom50' if (mod or hs_probe) else 'smb1')
+    if mod or hs_probe:
         for start,end in ((0,0x4000),(0x4040,0x4120),(0x4120+584956,0x100000)):
             if image[start:end] != baseline[start:end]:
-                raise ValueError('MOD candidate differs from current baseline outside application scope')
+                raise ValueError('MOD/probe candidate differs from current baseline outside application scope')
     return {'op': 'plan', 'baseline_sha256': baseline_sha256,
             'sha256': report['candidate_sha256'], 'image': base64.b64encode(image).decode('ascii')}
 

@@ -411,7 +411,7 @@ static void tick(fm1_mod_player *p){
     }
 }
 static int16_t clamp16(int sample){if(sample>32767)return 32767;if(sample<-32768)return -32768;return (int16_t)sample;}
-void fm1_mod_render(fm1_mod_player *p,int16_t *stereo,size_t frames){
+static void render(fm1_mod_player *p,int16_t *stereo,size_t frames,unsigned force_stereo){
     size_t i;unsigned ch;uint8_t peaks[4]={0,0,0,0};
     if(!stereo)return;
     for(i=0;i<frames;i++){
@@ -477,7 +477,7 @@ void fm1_mod_render(fm1_mod_player *p,int16_t *stereo,size_t frames){
                 }
             }
         }
-        if(p && p->stereo){stereo[2*i]=clamp16(left);stereo[2*i+1]=clamp16(right);}
+        if(force_stereo || (p && p->stereo)){stereo[2*i]=clamp16(left);stereo[2*i+1]=clamp16(right);}
         else { /* Mono speaker: every tracker voice reaches both DAC outputs. */
             stereo[2*i]=stereo[2*i+1]=clamp16((left+right)/2);}
         if(capture && ++p->scope_head==48)p->scope_head=0;
@@ -486,6 +486,12 @@ void fm1_mod_render(fm1_mod_player *p,int16_t *stereo,size_t frames){
         uint8_t decayed=p->meter[ch]?p->meter[ch]-1:0;
         p->meter[ch]=peaks[ch]>decayed?peaks[ch]:decayed;
     }
+}
+void fm1_mod_render(fm1_mod_player *p,int16_t *stereo,size_t frames){
+    render(p,stereo,frames,0);
+}
+void fm1_mod_render_stereo(fm1_mod_player *p,int16_t *stereo,size_t frames){
+    render(p,stereo,frames,1);
 }
 
 const uint8_t fm1_mod_entry_steps[FM1_MOD_ENTRY_STEPS]={0,1,2,3,4,6,8,16};

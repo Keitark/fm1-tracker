@@ -84,6 +84,9 @@ int fm1_mod_player_start_pattern_at(fm1_mod_player *p, fm1_mod_document *d,
                                     unsigned order, unsigned row);
 void fm1_mod_player_stop(fm1_mod_player *p);
 void fm1_mod_render(fm1_mod_player *p, int16_t *stereo, size_t frames);
+/* Render the same player once with tracker panning, without changing its
+ * local-output stereo mode. USB capture taps this before speaker downmix. */
+void fm1_mod_render_stereo(fm1_mod_player *p, int16_t *stereo, size_t frames);
 int fm1_mod_preview_start(fm1_mod_player *p, fm1_mod_document *d,
                           unsigned sample, unsigned midi, unsigned channel);
 int fm1_mod_preview_pcm(fm1_mod_player *p, const int8_t *pcm, size_t length,

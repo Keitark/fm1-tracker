@@ -20,6 +20,13 @@
 #include "controls.h"
 #include "bank.h"
 #include "audio_queue.h"
+#ifdef FM1_UAC_AUDIO
+#include "fm1_usb_audio.h"
+#include "fm1_usb_audio_target.h"
+#endif
+#ifdef FM1_UVC_SCREEN
+#include "tracker_capture.h"
+#endif
 #include <stdio.h>
 #include <string.h>
 
@@ -58,7 +65,18 @@ static uint32_t scan_retry_at,encoder_sequence;
 #else
 #define UI_STRIP_ROWS 8u
 #endif
+#ifdef FM1_UVC_SCREEN
+/* CPU-only render scratch. The LCD transport copies these bytes into its
+ * separately owned wire frame; USB DMA must remain in its normal RAM region.
+ * This section is cleared by the stock cache-RAM BSS startup closure. */
+#define TRACKER_CPU_SCRATCH __attribute__((section(".memp_memory_x"), aligned(4)))
+static uint8_t row_pixels[UI_STRIP_ROWS*480u] TRACKER_CPU_SCRATCH;
+static fm1_tracker_view capture_view TRACKER_CPU_SCRATCH;
+static uint8_t capture_rgb[FM1_UVC_ROWS_PER_PACKET*FM1_UVC_WIDTH*2u] TRACKER_CPU_SCRATCH;
+static uint8_t capture_view_ready;
+#else
 static uint8_t row_pixels[UI_STRIP_ROWS*480u];
+#endif
 static volatile int lcd_error,key_error,audio_error;
 static int scan_timer;
 static void flush_audio(void);
@@ -134,6 +152,10 @@ __attribute__((noinline,used)) void fm1_display_snapshot(unsigned phase,const ui
 
 static void audio_output(void *ctx,u8 *data,int len,u8 ch){
     unsigned i;int32_t *out=(int32_t *)data;uint32_t available=wr-rd;(void)ctx;
+#ifdef FM1_UAC_AUDIO
+    /* Called under audio_lock: apply one local-output mode to this block. */
+    const unsigned stereo=mix_stereo;
+#endif
     if(!data || len<=0)return;
     if(ch!=3 || len!=512){memset(data,0,(unsigned)len);audio_error=-1;return;}
     /* Song playback keeps its reservoir. A stopped one-shot may be shorter
@@ -146,6 +168,15 @@ static void audio_output(void *ctx,u8 *data,int len,u8 ch){
             if(primed && (control.running || player.preview_active))underruns++;}
     }
     if(primed && wr==rd)primed=0;
+#ifdef FM1_UAC_AUDIO
+    /* USB gets the raw stereo mix, including edit previews, independently of
+     * the local speaker mode and master volume. The bounded tap copies it. */
+    fm1_usb_audio_capture_push_pcm24(out,64);
+    if(!stereo)for(i=0;i<64;i++){
+        int32_t mono=(out[2*i]+out[2*i+1])/2;
+        out[2*i]=out[2*i+1]=mono;
+    }
+#endif
     {unsigned f=take(&input_lock);envelope.target_q7=mod_volume.valid?mod_volume.target:0;release(&input_lock,f);}
     fm1_audio_startup_process24(&envelope,out);frames+=64;
 }
@@ -172,7 +203,15 @@ static void shutdown(void){unsigned f;stop();if(scan_timer>0)sys_usec_timer_del(
     if(scanner.running)fm1_wl82_keyscan_stop(&scanner);fm1_volume_stop(&mod_volume);release(&input_lock,f);
     if(input_irq_registered)unrequest_irq(IRQ_SPI2_IDX,0);
     bit_clr_ie(IRQ_ALNK_IDX,0);f=take(&audio_lock);audio_enabled=0;release(&audio_lock,f);
-    unrequest_irq(IRQ_ALNK_IDX,0);iis_channel_off(8,0);iis_close(0);fm1_display_test_stop();
+    unrequest_irq(IRQ_ALNK_IDX,0);iis_channel_off(8,0);iis_close(0);
+#ifdef FM1_UAC_AUDIO
+    fm1_usb_audio_target_stop();
+#endif
+    fm1_display_test_stop();
+#ifdef FM1_UVC_SCREEN
+    /* Quiescence includes the capture transport before CDC can arm UBOOT. */
+    fm1_uvc_capture_stop();
+#endif
     f=take(&control_lock);control.available=0;control.quiescent=1;release(&control_lock,f);
     for(;;)os_time_dly(100);
 }
@@ -187,7 +226,7 @@ static void action(unsigned op){
             fm1_mod_player_start_at(&player,&song,editor.order,0);
         if(rc)return;
         page=0;view_context.arranger=view_context.bank_open=0;
-        player.stereo=mix_stereo;editor.edit=0;
+        f=take(&audio_lock);player.stereo=mix_stereo;release(&audio_lock,f);editor.edit=0;
         f=take(&control_lock);control.running=1;release(&control_lock,f);
     }
 }
@@ -211,7 +250,39 @@ static void ui_text(void){
     f=take(&control_lock);busy|=transfer.active || loaded!=song.loaded;
     release(&control_lock,f);
     if(busy){memset(&view,0,sizeof(view));strcpy(view.ui[0],"LOADING FROM USB PC");}
+#ifdef FM1_UVC_SCREEN
+    capture_view_ready=1;
+#endif
 }
+#ifdef FM1_UVC_SCREEN
+static void capture_step(uint32_t now){
+    fm1_uvc_stream *stream;fm1_uvc_write write;unsigned f;int begin,reserved,converted;
+    if(!capture_view_ready)return;
+    /* Adapter ISR and this task share CPU0. Only the bounded slot/state APIs
+     * run with interrupts masked; neither rendering nor snapshot copies do. */
+    local_irq_save(f);
+    if(!fm1_uvc_capture_enabled() || !(stream=fm1_uvc_stream_get())){
+        local_irq_restore(f);return;
+    }
+    begin=fm1_uvc_begin_frame(stream,now);
+    reserved=fm1_uvc_reserve_bytes(stream,now,&write);
+    local_irq_restore(f);
+    if(begin==FM1_UVC_OK)memcpy(&capture_view,&view,sizeof(capture_view));
+    if(reserved!=FM1_UVC_OK)return;
+    /* Each transmitted frame retains one logical screen snapshot, independent
+     * of the LCD frame currently being built or a playback-row transition. */
+    converted=fm1_tracker_capture_render(&capture_view,write.first_row,write.rows,capture_rgb);
+    if(converted==FM1_UVC_OK)
+        converted=fm1_uvc_rgb565be_to_yuy2(write.bytes+FM1_UVC_HEADER_BYTES,
+            capture_rgb+(write.first_byte%(FM1_UVC_WIDTH*2u)),
+            (uint32_t)(write.length-FM1_UVC_HEADER_BYTES)/2u);
+    now=timer_get_ms();
+    local_irq_save(f);
+    if(converted==FM1_UVC_OK)(void)fm1_uvc_publish_bytes(stream,now,&write);
+    else (void)fm1_uvc_cancel_bytes(stream,now,&write);
+    local_irq_restore(f);
+}
+#endif
 #ifndef FM1_LCD_ASYNC
 static void ui_refresh(void){
     ui_text();
@@ -380,7 +451,10 @@ static void input_encoder(unsigned id,int step){
     control.save_hint=0;
     if(transfer.active || transfer.exporting || !song.loaded){release(&control_lock,f);return;}
     if(fm1_tracker_controls_held(&gestures,9) && id==4){
-        fm1_tracker_controls_use_save(&gestures);mix_stereo=(uint8_t)(step>0);player.stereo=mix_stereo;
+        unsigned audio_flags;
+        fm1_tracker_controls_use_save(&gestures);
+        audio_flags=take(&audio_lock);mix_stereo=(uint8_t)(step>0);player.stereo=mix_stereo;
+        release(&audio_lock,audio_flags);
         notice(mix_stereo?"STEREO AUDIO OUT":"MONO ALL TRACKS SPEAKER");
         release(&control_lock,f);return;
     }
@@ -453,7 +527,12 @@ __attribute__((noinline,used)) static void fm1_peripheral_task(void *u){
         if(op){action(op);f=take(&control_lock);control.executing=0;running=control.running;release(&control_lock,f);}
         f=take(&audio_lock);queued=wr-rd;release(&audio_lock,f);
         if((running || player.preview_active) && song.loaded && !audio_error && queued<=PCM_RING_FRAMES-FM1_MOD_BLOCK){
-            unsigned i;fm1_mod_render(&player,block,FM1_MOD_BLOCK);
+            unsigned i;
+#ifdef FM1_UAC_AUDIO
+            fm1_mod_render_stereo(&player,block,FM1_MOD_BLOCK);
+#else
+            fm1_mod_render(&player,block,FM1_MOD_BLOCK);
+#endif
             f=take(&audio_lock);for(i=0;i<FM1_MOD_BLOCK;i++){
                 ring[wr_slot][0]=block[2*i];ring[wr_slot][1]=block[2*i+1];wr++;
                 wr_slot=fm1_pcm_next_slot(wr_slot);}release(&audio_lock,f);
@@ -540,6 +619,12 @@ __attribute__((noinline,used)) static void fm1_peripheral_task(void *u){
             }
 #endif
         }
+#ifdef FM1_UVC_SCREEN
+        /* Keep LCD work first and attempt at most two video rows per loop.
+         * One-shot previews also keep their audio headroom; backpressure and
+         * an inactive host simply defer capture without waits or retries. */
+        if(queued>=1470u || (!running && !player.preview_active))capture_step(timer_get_ms());
+#endif
         wdt_clear();
 #ifdef FM1_LCD_ASYNC
         /* The NES 30 fps path yields without a 10 ms sleep. That also keeps

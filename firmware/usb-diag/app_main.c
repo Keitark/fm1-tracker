@@ -8,6 +8,15 @@
 #include "boot_trace.h"
 #include "protocol.h"
 #include "boot_entry.h"
+#ifdef FM1_USB_HS_PHY_PROBE
+#include "hs_phy_probe.h"
+#endif
+#ifdef FM1_UVC_SCREEN
+#include "fm1_uvc.h"
+#endif
+#ifdef FM1_UAC_AUDIO
+#include "fm1_usb_audio_target.h"
+#endif
 #ifdef FM1_PERIPHERAL_TESTS
 #include "peripherals.h"
 #endif
@@ -43,7 +52,20 @@ __attribute__((noinline,used))
 static void fm1_usb_task(void *arg) {
     uint8_t rx[64],out[63]; unsigned generation=0,i,n; uint32_t last=0;
     (void)arg; fm1_boot_trace_mark(FM1_TRACE_WORKER); fm1_usb_stage=2;
+#ifdef FM1_USB_HS_PHY_PROBE
+    /* Explicitly detach any FUSB state inherited from the bootloader. */
+    usb_g_hold(USB0);
+    /* Probe once before FUSB is attached. Every outcome shuts HUSB down. */
+    fm1_hs_phy_probe_run();
+    os_time_dly(15); /* SDK disconnect settling interval, 150 ms. */
+#endif
     /* Explicit single-controller candidate. No host/OTG detection or VBUS drive. */
+#ifdef FM1_UVC_SCREEN
+    fm1_uvc_setup_init();
+#endif
+#ifdef FM1_UAC_AUDIO
+    fm1_usb_audio_target_init();
+#endif
     fm1_usb_error=usb_device_mode(FM1_USB_CONTROLLER,CDC_CLASS);
     if(fm1_usb_error) { fm1_usb_stage=0xff; for(;;)os_time_dly(100); }
     fm1_usb_stage=3;
@@ -96,7 +118,9 @@ static void fm1_usb_task(void *arg) {
             if(!fm1_usb_boot_pending() && !protocol.active && !protocol.used && (uint32_t)(now-last)>=1000 && tx_w==tx_r) {
                 char s[192]; last=now;
                 snprintf(s,sizeof(s),"# FM1DIAG/1 "
-#ifdef FM1_PERIPHERAL_TESTS
+#ifdef FM1_USB_HS_PHY_PROBE
+                         "profile=usb1-phy-probe/1 "
+#elif defined(FM1_PERIPHERAL_TESTS)
 #ifdef FM1_MOD_PLAYER
                          "profile=mod-editor/1 "
 #elif defined(FM1_MDX_PLAYER)

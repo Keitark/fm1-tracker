@@ -5,6 +5,18 @@
 #include "protocol.h"
 #include <string.h>
 #include <stdio.h>
+#ifdef FM1_TARGET_PI32V2
+#include "asm/clock.h"
+#endif
+#ifdef FM1_USB_HS_PHY_PROBE
+#include "hs_phy_probe.h"
+#endif
+#ifdef FM1_UVC_SCREEN
+#include "fm1_uvc.h"
+#endif
+#ifdef FM1_UAC_AUDIO
+#include "fm1_usb_audio_target.h"
+#endif
 #ifdef FM1_MDX_PLAYER
 #include "fm1_mdx_usb.h"
 #endif
@@ -39,6 +51,38 @@ static uint32_t crc_byte(uint32_t c, uint8_t b) {
 }
 static void command(fm1_diag_protocol *p, uint32_t now, fm1_diag_reply reply, void *ctx, int final) {
     char out[64]; uint32_t a,b; size_t n=strlen(p->line),i;
+#ifdef FM1_TARGET_PI32V2
+    if(!strcmp(p->line,"USB CLOCK STATUS")) {
+        snprintf(out,sizeof(out),"USB CLOCK sys=%d lsb=%d\n",clk_get("sys"),clk_get("lsb"));
+        reply(ctx,out);return;
+    }
+#endif
+#ifdef FM1_UAC_AUDIO
+    if(!strcmp(p->line,"USB AUDIO STATUS")) {
+        char audio[384];
+        fm1_usb_audio_target_status(audio,sizeof(audio));
+        reply(ctx,audio);return;
+    }
+#endif
+#ifdef FM1_UVC_SCREEN
+    if(!strcmp(p->line,"USB VIDEO STATUS")) {
+        fm1_uvc_status state;char video[256];
+        if(!fm1_uvc_get_status(&state)) {reply(ctx,"ERR USB_VIDEO_STATUS\n");return;}
+        snprintf(video,sizeof(video),"USB VIDEO active=%u cfg=%u commit=%u alt=%u shutdown=%u started=%u sent=%u dropped=%u packets=%u retries=%u backpressure=%u\n",
+            state.active,state.configured,state.committed,state.alt,state.shutdown,state.frames_started,
+            state.frames_sent,state.frames_dropped,state.packets_sent,state.retries,state.backpressure);
+        reply(ctx,video);return;
+    }
+#endif
+#ifdef FM1_USB_HS_PHY_PROBE
+    if(!strcmp(p->line,"USB PHY STATUS")) {
+        const fm1_hs_phy_report *r=fm1_hs_phy_probe_report();
+        char phy[160];
+        snprintf(phy,sizeof(phy),"USB PHY status=%u ready=%u polls=%u reset=%u hs=%u power=%02x samples=%u ms=%u USB0-RESTORED\n",
+            r->status,r->ready,r->polls,r->reset_seen,r->high_seen,r->power,r->samples,r->elapsed_ms);
+        reply(ctx,phy);return;
+    }
+#endif
 #ifdef FM1_MDX_PLAYER
     if(!p->active && fm1_mdx_usb_command(p->line,now,reply,ctx))return;
 #endif
@@ -46,7 +90,9 @@ static void command(fm1_diag_protocol *p, uint32_t now, fm1_diag_reply reply, vo
     if(!p->active && fm1_mod_usb_command(p->line,now,reply,ctx))return;
 #endif
     if(!strcmp(p->line,"HELLO")) {
-#ifdef FM1_PERIPHERAL_TESTS
+#ifdef FM1_USB_HS_PHY_PROBE
+        reply(ctx,"FM1DIAG/1 USB1-PHY-PROBE/1 USB0=CDC UBOOT=SERIAL COMMIT=BLOCKED\n");return;
+#elif defined(FM1_PERIPHERAL_TESTS)
 #ifdef FM1_MDX_PLAYER
         reply(ctx,"FM1DIAG/1 MDX-KARAOKE/1 RAM-UPLOAD UBOOT=SERIAL COMMIT=BLOCKED\n");return;
 #elif defined(FM1_MOD_PLAYER)
