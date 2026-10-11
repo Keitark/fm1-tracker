@@ -1,4 +1,4 @@
-"""Offline WL82 USB-only diagnostic link; no packaging, flashing or UAC."""
+"""Offline WL82 diagnostic/player link; optional USB video/audio, no flashing."""
 import argparse
 import hashlib
 import json
@@ -25,6 +25,10 @@ def main():
                    help='Temporary bounded USB1 negotiation probe before unchanged USB0 CDC; no USB1 class or video')
     p.add_argument('--uvc-screen',action='store_true',
                    help='Optional full-speed 240x240 YUY2 5fps tracker screen with CDC recovery')
+    p.add_argument('--uac-audio',action='store_true',
+                   help='Optional USB0 UAC1 44.1kHz stereo capture for tracker playback and audition')
+    p.add_argument('--uvc-ipad-pad',action='store_true',
+                   help='256x240 video with centered native240 image and 512-byte YUY2 rows')
     p.add_argument('--peripheral-tests',action='store_true')
     p.add_argument('--mdx',action='store_true',help='Standalone flash-demo MDX/PDX karaoke player with volatile CDC uploads')
     p.add_argument('--mod',action='store_true',help='ProTracker-style four-channel MOD editor with volatile CDC file transfer')
@@ -61,6 +65,9 @@ def main():
         p.error('--hs-phy-probe is a separate USB-only diagnostic')
     if a.uvc_screen and (not a.mod or not a.lcd_async or a.mod_source_dir or a.hs_phy_probe):
         p.error('--uvc-screen requires the current --mod --lcd-async profile')
+    if a.uac_audio and (not a.mod or a.mod_source_dir or a.hs_phy_probe):
+        p.error('--uac-audio requires the current --mod profile')
+    if a.uvc_ipad_pad and not a.uvc_screen:p.error('--uvc-ipad-pad requires --uvc-screen')
     if (a.mdx or a.mod) and (a.nes_smb1 or not a.lcd_stock_sequence):p.error('Player profiles require stock LCD sequence and exclude NES')
     if a.mdx and a.mod:p.error('Select only one player profile')
     if a.mod and not a.peripheral_tests:p.error('--mod requires --peripheral-tests')
@@ -108,6 +115,8 @@ def main():
     defines=make_list(text,'DEFINES')+['-DFM1_USB_CONTROLLER='+str(a.controller)]
     if a.hs_phy_probe:defines+=['-DFM1_USB_HS_PHY_PROBE=1']
     if a.uvc_screen:defines+=['-DFM1_UVC_SCREEN=1']
+    if a.uac_audio:defines+=['-DFM1_UAC_AUDIO=1']
+    if a.uvc_ipad_pad:defines+=['-DFM1_UVC_IPAD_PAD=1']
     if a.peripheral_tests:defines+=['-DFM1_PERIPHERAL_TESTS=1']
     if a.mdx:defines+=['-DFM1_MDX_PLAYER=1','-DFM1_TARGET_PI32V2=1','-DFM1_KEYSCAN_DMA2=1','-DFM1_KEYSCAN_IRQ=1','-DFM1_KEYSCAN_PACED=1']
     if a.mod:defines+=['-DFM1_MOD_PLAYER=1','-DFM1_TARGET_PI32V2=1','-DFM1_KEYSCAN_DMA2=1','-DFM1_KEYSCAN_IRQ=1','-DFM1_KEYSCAN_PACED=1']
@@ -147,8 +156,13 @@ def main():
     if a.uvc_screen:
         video=HERE.parent/'usb-video'
         includes=['-I'+str(video)]+includes
-        video_sources=[video/n for n in ('uvc_stream.c','uvc_control.c','fm1_uvc.c')]
+        video_sources=[video/n for n in ('uvc_stream.c','uvc_control.c','fm1_uvc.c','tracker_capture.c')]
         sources+=video_sources;speed_sources.update(video_sources)
+    if a.uac_audio:
+        audio=HERE.parent/'usb-audio'
+        includes=['-I'+str(audio)]+includes
+        audio_sources=[audio/n for n in ('fm1_usb_audio_capture.c','fm1_usb_audio_profile.c','fm1_usb_audio_target.c')]
+        sources+=audio_sources;speed_sources.update(audio_sources)
     if a.mdx:
         mdx=HERE.parent/'mdx'
         includes=['-I'+str(mdx/n) for n in ('include','vendor/retrofm','vendor/mdxtools')]+includes
@@ -238,7 +252,7 @@ def main():
         sources[sources.index(original)]=target
         speed_sources.remove(original);speed_sources.add(target)
         overlays[str(original)]=hashlib.sha256(original.read_bytes()).hexdigest()
-    for name,transform in (('cdc.c',vendor_overlay.cdc),('usb_device.c',lambda text:vendor_overlay.device(text,uvc_screen=a.uvc_screen)),('msd_upgrade.c',vendor_overlay.boot_entry)):
+    for name,transform in (('cdc.c',vendor_overlay.cdc),('usb_device.c',lambda text:vendor_overlay.device(text,uvc_screen=a.uvc_screen,uac_audio=a.uac_audio)),('msd_upgrade.c',vendor_overlay.boot_entry)):
         original=SDK/'apps/common/usb/device'/name
         target=out/('fm1-'+name);target.write_text(transform(original.read_text(encoding='utf-8')),encoding='utf-8')
         sources.append(target);overlays[str(original)]=hashlib.sha256(original.read_bytes()).hexdigest()
@@ -249,6 +263,7 @@ def main():
     if a.mdx:used.write_text(used.read_text()+'fm1_mdx_load\nfm1_mdx_render\nfm1_mdx_usb_command\nfm1_wl82_keyscan_async_raw\n')
     if a.mod:used.write_text(used.read_text()+'fm1_mod_open\nfm1_mod_render\nfm1_mod_usb_command\nfm1_wl82_keyscan_async_raw\n')
     if a.uvc_screen:used.write_text(used.read_text()+'fm1_uvc_setup_init\nfm1_uvc_desc_config\nfm1_uvc_capture_stop\nfm1_uvc_dma\nfm1_uvc_state\nfm1_uvc_video_descriptor\n')
+    if a.uac_audio:used.write_text(used.read_text()+'fm1_usb_audio_target_init\nfm1_usb_audio_target_stop\nfm1_uac_desc_config\nfm1_usb_audio_capture_push_pcm24\nfm1_usb_audio_capture_descriptor\nfm1_uac_dma\n')
     if a.nes_smb1:used.write_text(used.read_text()+'fm1_board_run\nfm1_display_write\nfm1_audio_startup_process24\nfm1_nes_run\n')
     ld=(out/'sdk.ld').read_text()
     for old,new in (('*(.data)','*(.data .data.*)'),('*(.bss)','*(.bss .bss.*)')):
@@ -277,13 +292,16 @@ def main():
     app=out/'fm1-usb-diag.app.bin';app.write_bytes(b''.join(parts))
     (out/'symbols.txt').write_text(run([TC/'llvm-nm.exe','-n','-S',elf]))
     (out/'disassembly.asm').write_text(run([TC/'llvm-objdump.exe','-d','-mcpu=r3',elf]))
-    report=audit(elf.read_bytes(),app.read_bytes(),usb_only=True,usb_peripheral_tests=a.peripheral_tests,usb_nes=a.nes_smb1,usb_mdx=a.mdx,usb_mod=a.mod,usb_hs_phy_probe=a.hs_phy_probe,usb_uvc_screen=a.uvc_screen,rom='smb1' if a.nes_smb1 else 'rom50',require_boot_trace=True,require_board_power=True)
+    report=audit(elf.read_bytes(),app.read_bytes(),usb_only=True,usb_peripheral_tests=a.peripheral_tests,usb_nes=a.nes_smb1,usb_mdx=a.mdx,usb_mod=a.mod,usb_hs_phy_probe=a.hs_phy_probe,usb_uvc_screen=a.uvc_screen,usb_uac_capture=a.uac_audio,usb_uvc_ipad_pad=a.uvc_ipad_pad,rom='smb1' if a.nes_smb1 else 'rom50',require_boot_trace=True,require_board_power=True)
     (out/'static-audit.json').write_text(json.dumps(report,indent=2)+'\n')
     result={'status':'LINKED_USB_DIAGNOSTIC_UNTESTED','flashable':False,'usb_controller_candidate':a.controller,
             'controller_routing_verified':False,'sdk_commit':SDK_PIN,'application_bytes':app.stat().st_size,
             'usb_hs_phy_probe':a.hs_phy_probe,
             'usb_uvc_screen':a.uvc_screen,
-            'uvc_mode':'240x240 YUY2 5fps, USB0 full-speed EP84; hardware qualification pending' if a.uvc_screen else None,
+            'usb_uac_capture':a.uac_audio,
+            'usb_uvc_ipad_pad':a.uvc_ipad_pad,
+            'uac_mode':'UAC1 44100Hz stereo PCM16 capture, USB0 EP81; hardware qualification pending' if a.uac_audio else None,
+            'uvc_mode':(('256x240' if a.uvc_ipad_pad else '240x240')+' YUY2 5fps, USB0 full-speed EP84 max642; hardware qualification pending') if a.uvc_screen else None,
             'probe_controller_candidate':1 if a.hs_phy_probe else None,
             'probe_contract':'bounded boot PHY negotiation only; no USB1 class/DMA/IRQ; always return to USB0' if a.hs_phy_probe else None,
             'application_sha256':hashlib.sha256(app.read_bytes()).hexdigest(),
@@ -337,6 +355,8 @@ def main():
         result['profile']='MOD_EDITOR_CANDIDATE'
     if a.uvc_screen:
         result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in video.glob('*.h')})
+    if a.uac_audio:
+        result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in audio.glob('*.h')})
     manifest.write_text(json.dumps(result,indent=2)+'\n');log.close()
     print(json.dumps({k:v for k,v in result.items() if k not in ('static_audit','source_sha256','archive_sha256','power_evidence','vendor_overlay_sources')},indent=2))
 

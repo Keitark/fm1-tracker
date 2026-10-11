@@ -92,7 +92,7 @@ static void descriptor_walk_and_terminal_chain(void)
         } else if (d[1] == 5) {
             assert(current_interface == 3 && current_alt == 1);
             assert(d[0] == 7 && d[2] == 0x84 && d[3] == 1);
-            assert(le16(d + 4) == 962 && le16(d + 4) < 1024 && d[6] == 1);
+            assert(le16(d + 4) == 642 && le16(d + 4) < 1024 && d[6] == 1);
             ++endpoints;
         } else {
             assert(d[1] == 0x24);
@@ -126,9 +126,11 @@ static void descriptor_walk_and_terminal_chain(void)
                     ++format;
                 } else if (d[2] == 5) {
                     assert(d[0] == 30 && d[3] == 1 && d[4] == 0);
-                    assert(le16(d + 5) == 240 && le16(d + 7) == 240);
-                    assert(le32(d + 9) == 4608000 && le32(d + 13) == 4608000);
-                    assert(le32(d + 17) == 115200 && le32(d + 21) == 2000000);
+                    assert(le16(d + 5) == FM1_UVC_WIDTH && le16(d + 7) == FM1_UVC_HEIGHT);
+                    assert(le32(d + 9) == FM1_UVC_FRAME_BITRATE &&
+                           le32(d + 13) == FM1_UVC_FRAME_BITRATE);
+                    assert(le32(d + 17) == FM1_UVC_FRAME_BYTES &&
+                           le32(d + 21) == FM1_UVC_FRAME_INTERVAL_100NS);
                     assert(d[25] == 1 && le32(d + 26) == 2000000);
                     ++frame;
                 } else {
@@ -177,7 +179,7 @@ static void get_requests_and_little_endian_fields(void)
             assert(reply.length == 26 && le16(reply.data) == 1);
             assert(reply.data[2] == 1 && reply.data[3] == 1);
             assert(le32(reply.data + 4) == 2000000);
-            assert(le32(reply.data + 18) == 115200 && le32(reply.data + 22) == 962);
+            assert(le32(reply.data + 18) == FM1_UVC_FRAME_BYTES && le32(reply.data + 22) == 642);
             assert(le16(reply.data + 8) == 0 && le16(reply.data + 10) == 0);
             assert(le16(reply.data + 12) == 0 && le16(reply.data + 14) == 0);
             assert(le16(reply.data + 16) == 0);
@@ -211,7 +213,7 @@ static void probe_normalizes_and_commit_applies_after_complete_out(void)
     assert(control.probe[2] == 1 && control.probe[3] == 1);
     assert(le32(control.probe + 4) == 2000000);
     assert(le16(control.probe + 12) == 0 && le16(control.probe + 16) == 0);
-    assert(le32(control.probe + 18) == 115200 && le32(control.probe + 22) == 962);
+    assert(le32(control.probe + 18) == FM1_UVC_FRAME_BYTES && le32(control.probe + 22) == 642);
     assert(!control.committed);
     memcpy(payload, control.probe, sizeof(payload));
     reply = set(2);

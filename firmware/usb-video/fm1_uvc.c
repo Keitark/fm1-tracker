@@ -130,7 +130,7 @@ static void endpoint_start(void)
     usb_g_set_intr_hander(USB0, FM1_UVC_VIDEO_ENDPOINT, endpoint_complete);
     usb_g_ep_config(USB0, FM1_UVC_VIDEO_ENDPOINT, USB_ENDPOINT_XFER_ISOC,
                     1, fm1_uvc_dma, FM1_UVC_PACKET_BYTES);
-    /* usb_g_ep_config writes 1023 on FUSB; pin the advertised 962 byte mode. */
+    /* usb_g_ep_config writes 1023 on FUSB; pin the advertised 642 byte mode. */
     usb_write_txmaxp(USB0, VIDEO_EP, FM1_UVC_PACKET_BYTES);
     usb_enable_ep(USB0, VIDEO_EP);
     ep_running = 1;

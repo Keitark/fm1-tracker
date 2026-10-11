@@ -95,12 +95,34 @@ class PolicyTests(unittest.TestCase):
                 self.assertFalse(calls[0]['usb_nes'])
                 self.assertEqual(calls[0]['rom'],'rom50')
                 self.assertFalse(calls[0]['usb_uvc_screen'])
+                self.assertFalse(calls[0]['usb_uac_capture'])
+                self.assertFalse(calls[0]['usb_uvc_ipad_pad'])
                 manifest.update(usb_uvc_screen=True,usb_controller_candidate=0,lcd_async=True)
                 def save_uvc():
                     (root/'build-manifest.json').write_text(json.dumps(manifest))
                 save_uvc()
                 prepare.prepare(root,worker.sha(baseline),baseline)
                 self.assertTrue(calls[-1]['usb_uvc_screen'])
+                manifest.update(usb_uac_capture=True,mod_source_dir='current')
+                save_uvc()
+                prepare.prepare(root,worker.sha(baseline),baseline)
+                self.assertTrue(calls[-1]['usb_uac_capture'])
+                manifest['usb_uvc_ipad_pad']=True;save_uvc()
+                prepare.prepare(root,worker.sha(baseline),baseline)
+                self.assertTrue(calls[-1]['usb_uvc_ipad_pad'])
+                for field,bad in (('usb_uvc_ipad_pad',1),('usb_uvc_screen',False)):
+                    previous=manifest.get(field,False);manifest[field]=bad;save_uvc()
+                    with self.assertRaisesRegex(ValueError,'iPad video'):
+                        prepare.prepare(root,worker.sha(baseline),baseline)
+                    manifest[field]=previous
+                manifest['usb_uvc_ipad_pad']=False;save_uvc()
+                for field,bad in (('usb_uac_capture',1),('usb_controller_candidate',1),
+                                  ('mod_source_dir',None),('usb_audio',True),('mod',False)):
+                    previous=manifest.get(field,False);manifest[field]=bad;save_uvc()
+                    with self.assertRaisesRegex(ValueError,'Tracker UAC'):
+                        prepare.prepare(root,worker.sha(baseline),baseline)
+                    manifest[field]=previous
+                manifest['usb_uac_capture']=False;save_uvc()
                 for field,bad in (('usb_uvc_screen',1),('usb_controller_candidate',1),
                                   ('lcd_async',False),('usb_hs_phy_probe',True),('mod',False)):
                     previous=manifest.get(field,False);manifest[field]=bad;save_uvc()

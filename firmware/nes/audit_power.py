@@ -102,7 +102,8 @@ def call_target(code, address):
     return address + 4 + relative * 2
 
 
-def audit_power(symbols, sections, code_at, required=False, usb_only=False, usb_audio=False):
+def audit_power(symbols, sections, code_at, required=False, usb_only=False, usb_audio=False,
+                usb_uac_capture=False):
     def value(name):
         require(name in symbols, 'Missing board power symbol ' + name)
         return symbols[name][0]
@@ -147,6 +148,13 @@ def audit_power(symbols, sections, code_at, required=False, usb_only=False, usb_
         # Reviewed original composite and composite-with-screenshot layouts.
         require(layout in ((224,236,260),(228,240,264),(260,272,296)),
                 'Composite audio power merged-global layout changed')
+    if usb_uac_capture:
+        # Reviewed tracker CDC/UVC/UAC link: power_init0x20011fe keeps
+        # identical instructions, with LRC state at +232/+244 and the
+        # sys_low_power store d1 ec 8d 30 at +268. Resolve every operand
+        # to its ELF symbol before normalizing the historical body hash.
+        require(usb_only and not usb_audio and layout==(232,244,268),
+                'Tracker capture power merged-global layout changed')
     for off,target,prefix,regbits,historical in (
         (0x0d6,'lrc.0',b'\x5a\xee',0x10,bytes.fromhex('5a ee 14 04')),
         (0x104,'lrc.6',b'\xd0\xec',0x80,bytes.fromhex('d0 ec 81 05')),
@@ -155,6 +163,9 @@ def audit_power(symbols, sections, code_at, required=False, usb_only=False, usb_
         delta=value(target)-base
         if usb_audio:
             require(delta%4==0,'Composite audio power state alignment changed')
+        elif usb_uac_capture and delta==268:
+            require(off==0x3c0 and layout==(232,244,268),
+                    'Tracker capture power merged-global target changed')
         elif usb_only and delta==256:
             # Screenshot CDC link: reviewed sys_low_power store d1 ec 81 30
             # at power_init+0x3c0, with LRC globals at+220/+232.

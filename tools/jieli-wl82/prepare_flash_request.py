@@ -17,6 +17,13 @@ def prepare(folder, baseline_sha256, baseline=None):
     usb_audio = manifest.get('usb_audio', False)
     hs_probe = manifest.get('usb_hs_phy_probe', False)
     uvc_screen = manifest.get('usb_uvc_screen', False)
+    uac_capture = manifest.get('usb_uac_capture', False)
+    ipad_pad = manifest.get('usb_uvc_ipad_pad', False)
+    if type(ipad_pad) is not bool or (ipad_pad and not uvc_screen):
+        raise ValueError('iPad video padding requires explicit screen UVC')
+    if type(uac_capture) is not bool or (uac_capture and (not mod or hs_probe or usb_audio or
+            manifest.get('mod_source_dir') is None or manifest.get('usb_controller_candidate') != 0)):
+        raise ValueError('Tracker UAC capture requires the explicit current USB0 MOD profile')
     if type(uvc_screen) is not bool or (uvc_screen and (not mod or hs_probe or
             not manifest.get('lcd_async') or manifest.get('usb_controller_candidate') != 0)):
         raise ValueError('Screen UVC requires the explicit USB0 asynchronous MOD profile')
@@ -51,7 +58,7 @@ def prepare(folder, baseline_sha256, baseline=None):
     image, report = pack.build_candidate(pack.V14_BACKUP.read_bytes(), elf, app,
         require_peripherals=False, usb_only=True, usb_peripheral_tests=not hs_probe,
         usb_nes=not (mdx or mod or hs_probe), usb_mdx=mdx, usb_mod=mod,
-        usb_audio=usb_audio, usb_hs_phy_probe=hs_probe, usb_uvc_screen=uvc_screen,
+        usb_audio=usb_audio, usb_hs_phy_probe=hs_probe, usb_uvc_screen=uvc_screen,usb_uac_capture=uac_capture,usb_uvc_ipad_pad=ipad_pad,
         rom='rom50' if (mod or hs_probe) else 'smb1')
     if mod or hs_probe:
         for start,end in ((0,0x4000),(0x4040,0x4120),(0x4120+584956,0x100000)):

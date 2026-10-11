@@ -31,9 +31,9 @@ FM1_UVC_RETAIN const uint8_t fm1_uvc_video_descriptor[FM1_UVC_VIDEO_DESCRIPTOR_B
     27, 0x24, 4, 1, 1,
     'Y', 'U', 'Y', '2', 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71,
     16, 1, 0, 0, 0, 0,
-    /* One discrete 240x240 frame at 5fps: 26 + 4*1 = 30 bytes. */
+    /* One discrete native/padded frame at 5fps: 26 + 4*1 = 30 bytes. */
     30, 0x24, 5, 1, 0, LE16(FM1_UVC_WIDTH), LE16(FM1_UVC_HEIGHT),
-    LE32(4608000u), LE32(4608000u), LE32(FM1_UVC_FRAME_BYTES),
+    LE32(FM1_UVC_FRAME_BITRATE), LE32(FM1_UVC_FRAME_BITRATE), LE32(FM1_UVC_FRAME_BYTES),
     LE32(FM1_UVC_FRAME_INTERVAL_100NS), 1, LE32(FM1_UVC_FRAME_INTERVAL_100NS),
     /* SMPTE170M primaries/transfer/matrix: BT.601 limited-range YUY2. */
     6, 0x24, 0x0d, 4, 4, 4,

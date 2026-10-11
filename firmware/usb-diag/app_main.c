@@ -14,6 +14,9 @@
 #ifdef FM1_UVC_SCREEN
 #include "fm1_uvc.h"
 #endif
+#ifdef FM1_UAC_AUDIO
+#include "fm1_usb_audio_target.h"
+#endif
 #ifdef FM1_PERIPHERAL_TESTS
 #include "peripherals.h"
 #endif
@@ -59,6 +62,9 @@ static void fm1_usb_task(void *arg) {
     /* Explicit single-controller candidate. No host/OTG detection or VBUS drive. */
 #ifdef FM1_UVC_SCREEN
     fm1_uvc_setup_init();
+#endif
+#ifdef FM1_UAC_AUDIO
+    fm1_usb_audio_target_init();
 #endif
     fm1_usb_error=usb_device_mode(FM1_USB_CONTROLLER,CDC_CLASS);
     if(fm1_usb_error) { fm1_usb_stage=0xff; for(;;)os_time_dly(100); }

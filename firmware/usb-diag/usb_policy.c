@@ -3,9 +3,15 @@
 #ifdef FM1_UVC_SCREEN
 #include "fm1_uvc.h"
 #endif
+#ifdef FM1_UAC_AUDIO
+#include "fm1_usb_audio_target.h"
+#endif
 /* Do not install the generic SDK private jump-to-ROM-updater command. */
 u32 usb_root2_testing(void) {return 0;}
 u32 check_ep_vaild(u32 ep) {
+#ifdef FM1_UAC_AUDIO
+    if(ep==1)return 1;
+#endif
 #ifdef FM1_UVC_SCREEN
     if(ep==4)return 1;
 #endif
@@ -18,6 +24,14 @@ static u32 filter(struct usb_device_t *d,struct usb_ctrlrequest *r) {
     if(fm1_uvc_setup_filter(d,r))return 1;
     if(recip==USB_RECIP_ENDPOINT && r->wIndex==0x84) {
         /* Isochronous endpoints have no halt feature. Only standard status. */
+        if(r->bRequestType==0x82 && r->bRequest==USB_REQ_GET_STATUS &&
+           r->wValue==0 && r->wLength==2)return 0;
+        usb_set_setup_phase(d,USB_EP0_SET_STALL);return 1;
+    }
+#endif
+#ifdef FM1_UAC_AUDIO
+    if(fm1_usb_audio_setup_filter(d,r))return 1;
+    if(recip==USB_RECIP_ENDPOINT && r->wIndex==0x81) {
         if(r->bRequestType==0x82 && r->bRequest==USB_REQ_GET_STATUS &&
            r->wValue==0 && r->wLength==2)return 0;
         usb_set_setup_phase(d,USB_EP0_SET_STALL);return 1;

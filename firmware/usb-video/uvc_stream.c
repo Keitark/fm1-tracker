@@ -28,6 +28,7 @@ static void prepare_packet(fm1_uvc_stream *s, fm1_uvc_packet *p,
     p->epoch = s->epoch;
     p->token = s->token;
     p->frame = frame;
+    p->first_byte = s->next_byte;
     p->length = length;
     p->discard = 0;
     p->bytes[0] = FM1_UVC_HEADER_BYTES;
@@ -63,7 +64,7 @@ static void invalidate(fm1_uvc_stream *s)
     s->active = 0;
     s->frame_active = 0;
     s->abort_pending = 0;
-    s->next_row = 0;
+    s->next_byte = 0;
     for (i = 0; i < FM1_UVC_QUEUE_SLOTS; ++i) {
         fm1_uvc_packet *p = &s->packets[i];
         if (p->state == FM1_UVC_READY)
@@ -132,27 +133,31 @@ int fm1_uvc_begin_frame(fm1_uvc_stream *s, uint32_t now)
         return FM1_UVC_WAIT;
     s->frame = next_nonzero(s->frame);
     s->fid ^= FM1_UVC_HEADER_FID;
-    s->next_row = 0;
+    s->next_byte = 0;
     s->frame_active = 1;
     s->next_frame_ms = now + FM1_UVC_FRAME_PERIOD_MS;
     ++s->stats.frames_started;
     return FM1_UVC_OK;
 }
 
-int fm1_uvc_reserve_rows(fm1_uvc_stream *s, uint32_t now,
-                         uint8_t rows, fm1_uvc_write *w)
+int fm1_uvc_reserve_bytes(fm1_uvc_stream *s, uint32_t now,
+                          fm1_uvc_write *w)
 {
     unsigned i;
+    uint32_t payload, row_offset;
     int slot;
     fm1_uvc_packet *p;
-    if (!w || !rows || rows > FM1_UVC_ROWS_PER_PACKET)
+    if (!w)
         return FM1_UVC_INVALID;
     if (!s->active || !s->frame_active)
         return FM1_UVC_WAIT;
     if (due(now, s->next_frame_ms))
         return fm1_uvc_abort_frame(s, now);
-    if (s->next_row + rows > FM1_UVC_HEIGHT)
+    if (s->next_byte >= FM1_UVC_FRAME_BYTES)
         return FM1_UVC_INVALID;
+    payload = FM1_UVC_FRAME_BYTES - s->next_byte;
+    if (payload > FM1_UVC_PAYLOAD_BYTES)
+        payload = FM1_UVC_PAYLOAD_BYTES;
     for (i = 0; i < FM1_UVC_QUEUE_SLOTS; ++i)
         if (s->packets[i].state == FM1_UVC_WRITING)
             return FM1_UVC_WAIT;
@@ -163,8 +168,8 @@ int fm1_uvc_reserve_rows(fm1_uvc_stream *s, uint32_t now,
     }
     p = &s->packets[slot];
     prepare_packet(s, p, s->frame,
-                   (uint16_t)(FM1_UVC_HEADER_BYTES + rows * FM1_UVC_WIDTH * 2u),
-                   (uint8_t)(s->fid | (s->next_row + rows == FM1_UVC_HEIGHT ?
+                   (uint16_t)(FM1_UVC_HEADER_BYTES + payload),
+                   (uint8_t)(s->fid | (s->next_byte + payload == FM1_UVC_FRAME_BYTES ?
                                        FM1_UVC_HEADER_EOF : 0u)));
     p->state = FM1_UVC_WRITING;
     w->bytes = p->bytes;
@@ -172,8 +177,11 @@ int fm1_uvc_reserve_rows(fm1_uvc_stream *s, uint32_t now,
     w->token = p->token;
     w->frame = p->frame;
     w->length = p->length;
-    w->first_row = s->next_row;
-    w->rows = rows;
+    w->first_byte = p->first_byte;
+    w->first_row = (uint16_t)(p->first_byte / (FM1_UVC_WIDTH * 2u));
+    row_offset = p->first_byte % (FM1_UVC_WIDTH * 2u);
+    w->rows = (uint8_t)((row_offset + payload + FM1_UVC_WIDTH * 2u - 1u) /
+                        (FM1_UVC_WIDTH * 2u));
     w->slot = (uint8_t)slot;
     return FM1_UVC_OK;
 }
@@ -181,19 +189,27 @@ int fm1_uvc_reserve_rows(fm1_uvc_stream *s, uint32_t now,
 static fm1_uvc_packet *valid_write(fm1_uvc_stream *s, const fm1_uvc_write *w)
 {
     fm1_uvc_packet *p;
+    uint32_t payload, row_offset, rows;
     if (!w || w->slot >= FM1_UVC_QUEUE_SLOTS)
         return 0;
     p = &s->packets[w->slot];
+    payload = (uint32_t)p->length - FM1_UVC_HEADER_BYTES;
+    row_offset = p->first_byte % (FM1_UVC_WIDTH * 2u);
+    rows = (row_offset + payload + FM1_UVC_WIDTH * 2u - 1u) /
+           (FM1_UVC_WIDTH * 2u);
     if (p->state != FM1_UVC_WRITING || p->token != w->token ||
         p->epoch != w->epoch || p->frame != w->frame || p->bytes != w->bytes ||
-        p->length != w->length || !w->rows || w->rows > FM1_UVC_ROWS_PER_PACKET ||
-        w->length != FM1_UVC_HEADER_BYTES + w->rows * FM1_UVC_WIDTH * 2u)
+        p->length != w->length || p->first_byte != w->first_byte ||
+        !payload || payload > FM1_UVC_PAYLOAD_BYTES || (payload & 3u) ||
+        (p->first_byte & 3u) || p->first_byte + payload > FM1_UVC_FRAME_BYTES ||
+        w->first_row != p->first_byte / (FM1_UVC_WIDTH * 2u) ||
+        w->rows != rows || !rows || rows > FM1_UVC_ROWS_PER_PACKET)
         return 0;
     return p;
 }
 
-int fm1_uvc_publish_rows(fm1_uvc_stream *s, uint32_t now,
-                         const fm1_uvc_write *w)
+int fm1_uvc_publish_bytes(fm1_uvc_stream *s, uint32_t now,
+                          const fm1_uvc_write *w)
 {
     fm1_uvc_packet *p = valid_write(s, w);
     if (!p)
@@ -208,17 +224,17 @@ int fm1_uvc_publish_rows(fm1_uvc_stream *s, uint32_t now,
         publish_abort(s);
         return FM1_UVC_STALE;
     }
-    if (w->first_row != s->next_row)
+    if (w->first_byte != s->next_byte)
         return FM1_UVC_INVALID;
     publish_packet(s, p);
-    s->next_row = (uint16_t)(s->next_row + w->rows);
-    if (s->next_row == FM1_UVC_HEIGHT)
+    s->next_byte += (uint32_t)w->length - FM1_UVC_HEADER_BYTES;
+    if (s->next_byte == FM1_UVC_FRAME_BYTES)
         s->frame_active = 0;
     return FM1_UVC_OK;
 }
 
-int fm1_uvc_cancel_rows(fm1_uvc_stream *s, uint32_t now,
-                        const fm1_uvc_write *w)
+int fm1_uvc_cancel_bytes(fm1_uvc_stream *s, uint32_t now,
+                         const fm1_uvc_write *w)
 {
     fm1_uvc_packet *p = valid_write(s, w);
     int result;

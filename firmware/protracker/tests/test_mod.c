@@ -426,6 +426,65 @@ static void test_all_four_channels_on_mono_speaker(void){
     assert(pcm[0]==8192 && pcm[1]==8192);
 }
 
+static void test_explicit_stereo_preserves_local_mode_and_sample_preview(void){
+    static int16_t capture[FM1_MOD_BLOCK*2],local[FM1_MOD_BLOCK*2],stereo[FM1_MOD_BLOCK*2];
+    static const unsigned volumes[4]={64,16,32,48};
+    fm1_mod_player raw,mono,phone;unsigned ch,i;
+    setup_preview_sample();doc.bytes[20+29]=2; /* Keep the constant sample looping. */
+    assert(fm1_mod_open(&doc,doc.length)==0);
+    for(ch=0;ch<4;ch++)assert(fm1_mod_cell_set(&doc,0,0,ch,
+        (fm1_mod_cell){428,1,0xc,(uint8_t)volumes[ch]})==0);
+    for(ch=0;ch<4;ch++){
+        fm1_mod_player_start(&raw,&doc);
+        assert(fm1_mod_preview_start(&raw,&doc,1,48,ch)==0);
+        mono=phone=raw;phone.stereo=1;
+        fm1_mod_render_stereo(&raw,capture,FM1_MOD_BLOCK);
+        fm1_mod_render(&mono,local,FM1_MOD_BLOCK);
+        fm1_mod_render(&phone,stereo,FM1_MOD_BLOCK);
+        assert(raw.stereo==0 && mono.stereo==0 && phone.stereo==1);
+        assert(capture[0]==(ch==0 || ch==3?11264:7168));
+        assert(capture[1]==(ch==0 || ch==3?3072:7168));
+        for(i=0;i<FM1_MOD_BLOCK;i++){
+            assert(capture[2*i]==stereo[2*i] && capture[2*i+1]==stereo[2*i+1]);
+            assert(local[2*i]==(capture[2*i]+capture[2*i+1])/2);
+            assert(local[2*i+1]==local[2*i]);
+        }
+        /* Rendering the USB mix advances playback and previews exactly once. */
+        phone.stereo=0;
+        assert(!memcmp(&raw,&phone,sizeof(raw)) && !memcmp(&raw,&mono,sizeof(raw)));
+    }
+}
+
+static void test_explicit_stereo_bank_preview_panning(void){
+    static const int8_t sample[4]={-64,-64,-64,-64};
+    fm1_mod_player raw,mono,phone;int16_t capture[2],local[2],stereo[2];unsigned ch;
+    for(ch=0;ch<4;ch++){
+        memset(&raw,0,sizeof(raw));
+        assert(fm1_mod_preview_pcm(&raw,sample,sizeof(sample),32,0,0,4,48,ch)==0);
+        mono=phone=raw;phone.stereo=1;
+        fm1_mod_render_stereo(&raw,capture,1);
+        fm1_mod_render(&mono,local,1);fm1_mod_render(&phone,stereo,1);
+        assert(raw.stereo==0 && !raw.playing);
+        assert(capture[0]==(ch==0 || ch==3?-2048:0));
+        assert(capture[1]==(ch==0 || ch==3?0:-2048));
+        assert(!memcmp(capture,stereo,sizeof(capture)));
+        assert(local[0]==-1024 && local[1]==-1024);
+        phone.stereo=0;
+        assert(!memcmp(&raw,&phone,sizeof(raw)) && !memcmp(&raw,&mono,sizeof(raw)));
+    }
+}
+
+static void test_explicit_stereo_four_voices_and_preview_headroom(void){
+    fm1_mod_player player;int16_t pcm[2];unsigned ch;
+    setup_preview_sample();memset(doc.bytes+2108,127,4);
+    for(ch=0;ch<4;ch++)assert(fm1_mod_cell_set(&doc,0,0,ch,
+        (fm1_mod_cell){428,1,0,0})==0);
+    fm1_mod_player_start(&player,&doc);
+    assert(fm1_mod_preview_start(&player,&doc,1,48,0)==0);
+    fm1_mod_render_stereo(&player,pcm,1);
+    assert(player.stereo==0 && pcm[0]==24384 && pcm[1]==16256);
+}
+
 static void test_arpeggio_resets_on_next_row(void){
     static int16_t pcm[5500*2];fm1_mod_player player;
     fm1_mod_new(&doc);doc.bytes[20+23]=2;doc.bytes[20+25]=64;
@@ -550,6 +609,9 @@ int main(int argc,char **argv){
     if(argc==3 && !strcmp(argv[1],"--probe")){probe_mod(argv[2]);return 0;}
     if(argc==2){test_starter_bank(argv[1]);puts("starter bank parsed and rendered");return 0;}
     test_document();test_player();test_keyboard_preview();test_all_four_channels_on_mono_speaker();
+    test_explicit_stereo_preserves_local_mode_and_sample_preview();
+    test_explicit_stereo_bank_preview_panning();
+    test_explicit_stereo_four_voices_and_preview_headroom();
     test_invalid_preview_sample_cancels_previous_sound();
     test_empty_preview_sample_cancels_previous_sound();
     test_player_starts_at_selected_order_and_row();test_player_start_at_rejects_invalid_targets();

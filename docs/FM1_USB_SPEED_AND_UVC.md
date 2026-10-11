@@ -1,4 +1,4 @@
-# FM-1 USB speed and tracker UVC
+# FM-1 USB speed, tracker UVC and UAC capture
 
 Status: **2026-10-11**. Work item: [issue #11](https://github.com/Keitark/fm1-tracker/issues/11).
 
@@ -8,7 +8,10 @@ Status: **2026-10-11**. Work item: [issue #11](https://github.com/Keitark/fm1-tr
 | --- | --- |
 | Connected FM-1 USB0 CDC | Windows hub metadata reports **full-speed, 12 Mbit/s**. |
 | USB1 high-speed path | Bounded PHY probe flashed, full-readback verified, and executed. **No fresh host reset or HSMODE was observed.** USB0 CDC returned. |
-| Tracker screen UVC | Composite tracker flashed and full-readback verified. Windows camera/CDC enumeration and tracker playback telemetry pass. **Host video capture is not accepted:** DirectShow cannot open the camera. |
+| Earlier native tracker screen UVC | First CDC/UVC composite flashed and full-readback verified. The user subsequently reported **clear video in OBS on Windows 11**. The iPad photo shows garbled tracker text. Earlier FFmpeg/DirectShow opening failed; that historical failure does not describe every host application. |
+| Installed combined tracker CDC/UVC/UAC | Protected full readback and boot pass. Windows reports CDC, camera and UAC present without errors. A concurrent run received **60 complete 256 × 240 frames** and **12.31 s of 44.1 kHz PCM16 stereo audio**. UAC telemetry reports recurring FIFO starvation/silent-fill events; clean capture timing is **not accepted yet**. |
+| Buffered combined correction | New source uses a 256-frame cache-SRAM FIFO, 128-frame priming and wider occupancy thresholds. The reproduced scheduling-jitter regression has zero settled loss. Target static audits and protected plan pass; this correction is **not yet flashed**. |
+| iPad compatibility mode | Optional **256 × 240** video centers the native 240 × 240 screen with black side padding. A 480-to-512-byte row-stride mismatch reproduces the photographed geometry, but the app's internal handling and the fix on an iPad remain **unverified**. |
 
 The linked USB1 probe application is **130,192 bytes**, SHA-256
 `44b8c4e6bcbd3b8e030bcbd9188f3b0a6daa6e92b18cd725277aecba6eabd121`.
@@ -135,121 +138,285 @@ A temporary diagnostic installation and later restoration of the old image use
 the protected host writer with the exact verified baseline and readback checks.
 There is **no automatic NOR rollback** in this firmware.
 
-## Tracker UVC implementation
+## Installed first CDC/UVC tracker: historical build and hardware evidence
 
-The [portable core](../firmware/usb-video/uvc_stream.h) targets **240 × 240 YUY2 at
-5 frames/s**: 115,200 bytes per frame and 576,000 image bytes/s before UVC headers.
-It uses a **3,012-byte stream state**, three bounded packet slots, no heap, stable
-packet leases, retry on transport backpressure, and reset epochs to reject stale
-work. RGB565-to-YUY2 conversion runs outside the transport/IRQ critical section.
-
-The [conditional tracker producer](../firmware/protracker/target.c) freezes one
-logical view per video frame and prepares at most two rows per task iteration.
-Rendering/conversion occur outside IRQ guards, after LCD work and with audio
-headroom. CPU-only RGB scratch and the view snapshot use the cache-RAM BSS
-section; endpoint DMA remains separate. The adapter contract is in
-[tracker_capture.h](../firmware/usb-video/tracker_capture.h).
-
-The composite function retains CDC on interfaces 0/1, adds video control on 2
-and video streaming on 3, and uses endpoint `0x84`. Fixed UVC 1.0 PROBE/COMMIT
-controls and a dedicated 1,024-byte, 64-byte-aligned DMA buffer are implemented.
-CPU-only capture/stream state occupies 6,496 bytes of cache BSS; emitted startup
-code explicitly clears that section. ISO completion work has no allocation,
-logging, rendering, task delay, or generic blocking endpoint write.
+The first UVC image used **240 × 240 YUY2 at 5 frames/s**, 115,200 bytes per
+frame. It had a 3,012-byte stream state, three packet slots, and a separate
+1,024-byte endpoint DMA buffer aligned to 64 bytes. CDC occupied interfaces 0/1,
+VideoControl 2 and VideoStreaming 3, with ISO IN endpoint `0x84`. It did not
+include UAC capture.
 
 The linked application is **490,192 bytes**, SHA-256
 `552b2f69218e3d1e09ee3de854e5eb0562056f66bf61e57d2b9d10b5d137d90b`.
-The linker retains **132,364 bytes** of heap against the unchanged 128 KiB gate.
-Conservative emitted bounds for the added paths are 160 bytes for TX IRQ and
+The linker retained **132,364 bytes** of heap against the unchanged 128 KiB gate.
+Conservative emitted bounds for the added paths were 160 bytes for TX IRQ and
 512 bytes for capture work, including their caller frames. USB and peripheral
-task stacks are 8,192 and 16,384 bytes. These are local code bounds, not a measured
-whole-program stack high-water mark. Windows receiving actual video frames is
-still a separate acceptance gate.
-
-### First composite hardware run
+task stacks are 8,192 and 16,384 bytes. These are local code bounds, not measured
+whole-program stack high-water marks.
 
 The protected writer updated **120 application sectors**, application directory
 last, and verified one complete readback against full-image SHA-256
 `47093928be9de4410c464bc5e7f9927c9fce01699458b57876e8a3e5daa38c58`.
 Boot observation confirmed `MOD-EDITOR/1` on COM4. Its audio clock advanced
 **441,152 → 573,504 frames** with zero reported underruns and LCD/key/audio
-initialization errors all zero. This replaces the previous NES application.
+initialization errors all zero. This replaced the previous NES application.
 
-Windows reports both CDC and **FM1 Tracker Screen**, using `usbvideo.inf`, with
-PnP problem code 0. Hub metadata still reports **full speed, 12 Mbit/s**.
-After `MOD PLAY`, State of the Art's order/row counters advanced, display updates
+Windows reported CDC and **FM1 Tracker Screen**, using `usbvideo.inf`, with
+PnP problem code 0. Hub metadata reported **full speed, 12 Mbit/s**. After
+`MOD PLAY`, State of the Art's order/row counters advanced, display updates
 were approximately 25/s, and the reported underrun count remained zero.
-These are serial observations; physical sound, knob response and visual smoothness
-were not confirmed during this run.
+These are serial observations; they do not establish physical sound or control
+response during a video capture.
 
-DirectShow device enumeration lists the FM-1 camera, but FFmpeg open/format-query
-attempts fail with `Unable to BindToObject`. No host video frames were received.
-CDC status remains `cfg=1 commit=0 alt=0 shutdown=0`, with all video counters zero:
-the host never selected the streaming alternate. A temporary serial check used
-DTR disabled and received no output; setting DTR enabled restored replies, so
-that silence was not evidence of a firmware stall.
+### Historical DirectShow test and subsequent user observations
 
-The device subsequently disappeared from Windows USB detection, with no host
-flash or reset operation in progress. Reconnection is required to collect the
-exact DirectShow HRESULT and compare Media Foundation activation. Do not infer
-the cause from the FFmpeg message alone. A compiled, local-only diagnostic is
-retained under ignored `tmp/uvc-camera-diag/`; it activates only a unique exact
-`FM1 Tracker Screen` match and reports HRESULTs without running a capture graph.
+An earlier FFmpeg/DirectShow enumeration listed the FM-1 camera, but its
+open/format-query attempts failed with `Unable to BindToObject`. That test
+received no host frames and left video at `cfg=1 commit=0 alt=0 shutdown=0`
+with all video counters zero. A serial check with DTR disabled also received no
+output; enabling DTR restored replies, so that silence was not a firmware stall.
+The device later disappeared from present-only Windows USB detection and was
+subsequently reconnected. A local-only diagnostic under ignored
+`tmp/uvc-camera-diag/` can report HRESULTs for a unique exact camera-name match
+without running a capture graph.
 
-Source review identified missing VideoControl Request Error Code queries in
-that first image. The correction below resolves the source gap; its relationship
-to the host bind failure is unproven. Complete moving-frame, close/reopen,
-streaming playback and streaming UBOOT checks before qualifying the UVC function.
-The separately tested USB1 diagnostic recovery does not qualify the composite
-stream's active-DMA recovery path.
+The user subsequently confirmed **clear tracker video in OBS on Windows 11**.
+Their iPad photograph shows the tracker layout and scopes arriving, with
+corrupted text and a bright green footer; the camera app reports 240p/5 fps.
+This demonstrates a receiving video path on the iPad. It does not identify
+which copy, stride or format conversion operation caused the corruption.
 
-### Corrected candidate, not flashed
+A local comparison reconstructed the photographed geometry by interpreting
+packed 480-byte rows as 512-byte rows. The native rendered image and the new
+packetizer reconstruction compare byte-for-byte without that deliberate
+mismatch. This supports a host row-stride hypothesis; it is **an inference,
+not a verified diagnosis of the iPad app's internals**. The app and iPad model
+have not yet been recorded.
 
-The current source supports entity 0 / VideoControl interface 2 / selector 2
-`GET_CUR` and `GET_INFO`. Both return at most one byte; `GET_INFO` reports GET-only
-support. `GET_CUR` snapshots the preceding request error before a successful
-video control request clears it. Malformed requests still stall, and stale OUT
-callbacks cannot overwrite the error or pending transfer of a newer request.
+### Historical control correction, never deployed
 
-Portable control coverage now has **11 focused groups**, alongside the nine
-stream groups. Actual adapter regression checks also pass for bounded VC replies,
-malformed-query stalls and unchanged active-stream/COMMIT state.
+A separate correction added entity 0 / VideoControl interface 2 / selector 2
+Request Error Code `GET_CUR` and `GET_INFO`, each bounded to one byte. `GET_INFO`
+reports GET-only support; `GET_CUR` snapshots the preceding error before a
+successful video control clears it. Malformed requests stall, and stale OUT
+callbacks cannot change a newer request's error or pending transfer.
 
-The corrected linked application is **490,448 bytes**, SHA-256
+That linked application was **490,448 bytes**, SHA-256
 `7ea8b19e2d15e91ac3a540e962a07ea1a71157c939af6103eb045bb8c89c4e0a`.
-Its source/archive/overlay closure and static audit pass; heap remains
-**132,364 bytes**. Control state grows from 60 to 64 bytes in cache BSS; the
-descriptor bytes and ordinary-RAM DMA allocation are unchanged. The prepared
-full image has SHA-256
-`e1f7ff2a21c89304f21bb615777f94bd8459f0406c1c12722ded423aa15a1c94`.
-Its application-only protected plan passes against the verified first composite
-image. **It has not been flashed:** FM-1 remains absent from Windows detection.
-The installed image remains the first composite candidate described above.
+Its audit passed with **132,364 bytes** of heap. Its prepared full-image SHA-256
+was `e1f7ff2a21c89304f21bb615777f94bd8459f0406c1c12722ded423aa15a1c94`.
+It was **not flashed**. The correction is retained in the combined source below;
+its relationship to the earlier DirectShow opening failure is unproven.
 
-The actual adapter now routes class entity requests to the bounded core for
-error classification and records malformed OUT counts without payload reads.
-Adapter tests retrieve errors for known/unknown entities and OUT counts
-0, 25, 27 and 65,535, while preserving newer errors after a stale OUT callback.
-They check unchanged DMA/arm/COMMIT/alternate state with and without active video.
-Final emitted review confirms unchanged normal RAM, DMA, descriptor and heap;
-cache BSS is 6,500 bytes and its startup clear is retained. The receive and setup
-filter frames each grow four bytes; TX IRQ ≤160 bytes and task capture ≤512 bytes
-remain valid. This closes the local code/added-stack gate, while the corrected
-image remains unflashed and its camera behavior unverified.
+## Current combined tracker CDC/UVC/UAC source
 
-Raw 240 × 240 YUY2 at 30 frames/s requires 3,456,000 image bytes/s, so that target
-needs a working high-speed path or a different video encoding/mode.
+The current profile keeps USB0 full speed and adds **capture-only UAC1** to the
+tracker. UVC mirrors both playback and edit views. UAC records song playback and
+sample/note audition from the existing audio engine. It does not add remote
+editing controls or PC-to-FM-1 USB audio playback.
 
-Reproduce host checks without contacting the FM-1:
+| Function | Interfaces | Endpoint and format |
+| --- | --- | --- |
+| CDC serial commands/recovery | 0/1 | Existing CDC endpoints |
+| UVC tracker screen | 2/3 | ISO IN `0x84`, YUY2 at 5 fps, maximum 642 bytes per 1 ms interval |
+| UAC tracker capture | 4/5 | Asynchronous ISO IN `0x81`, stereo PCM16 at 44,100 Hz, maximum 180 bytes per 1 ms interval |
+
+Without UVC, the UAC-only build uses AudioControl/AudioStreaming interfaces 2/3.
+The audio profile has one fixed rate and advertises no volume, mute or rate
+controls. Its descriptor declares asynchronous capture to match the native IIS
+clock. The combined ISO endpoint data reservation is **822 bytes per 1 ms USB
+frame**; actual simultaneous host receipt remains a device acceptance check.
+
+### Video packets and the optional iPad padded mode
+
+The [portable stream core](../firmware/usb-video/uvc_stream.h) uses a **2,068-byte
+stream state**, three bounded packet slots, no heap and reset epochs that reject
+stale work. Each packet carries at most **640 consecutive YUY2 image bytes**
+plus a two-byte UVC header. Packets may cross a row boundary. Rendering and
+conversion run outside the transport/IRQ critical section, with at most two
+RGB565 scratch rows per task iteration, after LCD work and with audio headroom.
+
+| Video profile | Row bytes | Image bytes/frame | Image packets/frame | Advertised image bitrate |
+| --- | --- | --- | --- | --- |
+| Native 240 × 240 | 480 | 115,200 | 180 | 4,608,000 bit/s |
+| `--uvc-ipad-pad`: 256 × 240 | 512 | 122,880 | 192 | 4,915,200 bit/s |
+
+Both advertise a **200 ms frame interval (5 fps)** and use the same 642-byte
+endpoint maximum. The padded profile renders eight black pixels on each side
+of the native screen. The physical LCD remains 240 × 240. It is intended to
+avoid the suspected 480/512-byte host stride mismatch, and remains available as
+an explicit build option. **Its iPad image has not yet been checked.** The 192
+image-bearing USB intervals leave less delivery margin than native mode's 180;
+audio or display load can still cause dropped video frames.
+
+One logical view is frozen per USB video frame. This frame rate is separate
+from the LCD refresh rate. CPU-only state and scratch use reclaimed cache SRAM;
+the 1,024-byte, 64-byte-aligned video endpoint DMA buffer stays in ordinary SRAM.
+There is no extra full video framebuffer, allocation in the TX IRQ, IRQ rendering,
+blocking endpoint write or stock camera-driver allocation path.
+
+### Audio source and stream lifetime
+
+The [audio capture module](../firmware/usb-audio/README.md) takes the renderer's
+native stereo PCM24 output **before speaker mono folding and the local master
+volume envelope**, then saturates/truncates it to PCM16. Speaker mode includes
+all tracker parts locally while USB capture preserves the original stereo
+mix. The local SPK/ST mode and physical volume do not select USB capture pan or
+gain. The renderer advances once per audio block; capture does not render a
+second copy of the song.
+
+To select the local output, **hold SAVE and turn KNOB3** until the top line
+shows **SPK** (speaker mono fold) or **ST** (stereo Audio OUT). Positive encoder
+steps select ST and negative steps select SPK; physical clockwise polarity
+has not been confirmed in this session. USB capture remains stereo in both modes.
+
+A bounded 256-frame FIFO and persistent pending packet keep USB backpressure
+from blocking the audio renderer. The current source places the 1,024-byte,
+CPU-only FIFO in reclaimed cache SRAM, waits for 128 frames before priming and
+uses occupancy thresholds of 108/172 frames. The installed first combined image
+uses the older 128-frame FIFO; its correction is described below. The adapter
+owns a separate ordinary-RAM
+**256-byte, 64-byte-aligned audio DMA buffer**. It preserves DMA/pending bytes
+on busy or incomplete ISO transactions. Nominal 44/45-frame packets and bounded
+43..45-frame occupancy correction follow the independent IIS and USB clocks.
+
+UAC alt0, configuration changes and bus reset stop and flush capture; valid
+configuration and alt1 can start it again. Tracker/UBOOT shutdown permanently
+latches both audio and video capture off for that boot. Host reset or later
+reconfiguration cannot rearm them after quiescence. A normal firmware boot
+clears the shutdown latch. The CDC `UBOOT` / `UBOOT CONFIRM` exchange and protected
+writer remain required; there is no automatic NOR rollback or second image bank.
+
+### First combined build and verified deployment
+
+The requested combined candidate is built under local,
+ignored `firmware/usb-diag/build/mod-stoa-uvc-uac-pad-20261011/`. It embeds the
+SHA-256-locked State of the Art MOD and FM1BREAK bank through the existing private
+input workflow, with LCD SPI 30 MHz and RGB444. Build flags include
+`--mod --uvc-screen --uac-audio --uvc-ipad-pad --lcd-async`.
+
+The installed combined linked application is **494,192 bytes**, SHA-256
+`1c3f591e42aa523182c422c0604bf8104cd4db83f4aa0b397263e1010913cb0a`.
+Its prepared 1 MiB full-image SHA-256 is
+`7b4c8076c8a1fd03f296e821c6a164b5a01e21acfaacc643169f17a1c2e75693`.
+Source/archive/overlay closure and static audits pass. Heap is **131,340 bytes**,
+above the unchanged **128 KiB** gate, and cache BSS is **5,620 bytes**. The
+protected application-sector request and plan were accepted against the
+verified first-composite baseline.
+
+The protected writer updated **121 sectors**, application directory last, and
+verified the full readback against
+`7b4c8076c8a1fd03f296e821c6a164b5a01e21acfaacc643169f17a1c2e75693`.
+After exactly one reset, observation found the tracker on COM4 with zero audio,
+LCD and key initialization errors and zero tracker playback underruns. Windows
+reports CDC, camera and UAC all present with status OK. USB0 remains **full speed,
+12 Mbit/s**. This is the currently installed image until a later verified
+deployment is recorded.
+
+### First simultaneous Windows audio/video capture
+
+The local `tmp/check_tracker_av.py` check requested a 12-second capture. It
+received **12.31 seconds of 44,100 Hz stereo PCM16 audio**: left and right differ
+in **540,335 of 542,871 frames**. The host audio API reported no capture errors.
+Concurrent DirectShow capture received **60 complete 256 × 240 video frames**.
+These establish actual simultaneous host receipt for this image, including
+distinct stereo channel data; they do not establish the padded image on an iPad.
+
+Firmware UAC telemetry exposed a buffering flaw during that run: `under`
+increased **2 → 94**, `silent` **51 → 542 frames** (approximately **0.1%** of
+the recording), and startup/close `over` increased **121 → 202**. The tracker
+playback underrun count stayed zero. Host receipt and a clean host API status do
+not cancel these firmware starvation/silent-fill observations. **Clean UAC
+timing is not accepted** for this image. The source correction and its pending
+deployment have their own hashes and test evidence below.
+
+### Buffered correction candidate, not yet flashed
+
+The corrected build is under local, ignored
+`firmware/usb-diag/build/mod-stoa-uvc-uac-pad-buffer-20261011/`. Its application is
+**494,192 bytes**, SHA-256
+`69fe7875e2d75ab4891359726a6e253f3520ff8f47928115034f92b1e8259838`.
+The prepared full-image SHA-256 is
+`ba75174ea861c54f608b940b18807070f0593b04ceabbfc59e90642ea5f3bedb`.
+Static audits pass with **131,852 bytes of heap** and **6,644 bytes of cache
+BSS**; the protected plan is accepted. Final source/archive/overlay closure and
+emitted review pass, including the FIFO's complete startup clear. The device is
+currently absent from Windows, so the protected write and clock readout await
+reconnection. No second write or reset was attempted. The installed full-image
+hash remains `7b4c8076c8a1fd03f296e821c6a164b5a01e21acfaacc643169f17a1c2e75693`.
+
+The correction doubles the FIFO to **256 stereo frames**, primes after **128
+frames**, and uses **108/172-frame** occupancy boundaries to preserve a callback
+of reserve against submillisecond producer scheduling jitter. A separate
+**1,024-byte CPU-only cache-SRAM FIFO** replaces the earlier 512-byte ordinary-RAM
+FIFO member. Audio DMA remains the same 256-byte ordinary-RAM allocation. FIFO
+reset/epoch handling and permanent shutdown remain bounded and tested.
+
+An actual-core **12.311-second** regression delays one native callback by
+**0.4 ms every 32 callbacks** at **+650 ppm**, while retaining the producer's
+long-run sample rate. The earlier buffering produced **81 underruns and 579
+silent frames** in this local regression. The correction preserves exact sample
+order with **zero settled loss**, with **88 silent frames only during startup**.
+All **4/4 UAC portable/adapter targets pass**. This is local simulation evidence;
+clean timing on the FM-1 still requires a fresh capture after verified deployment.
+
+The correction also adds read-only CDC command `USB CLOCK STATUS`, reporting
+`clk_get` values for `sys` and `lsb`. It does not change either frequency. Hardware
+clock values have not yet been collected for this candidate.
+
+## Reproduce local verification
+
+Run from the repository root; these tests do not contact the FM-1:
 
 ```powershell
-python firmware/usb-video/run_host_tests.py
-python firmware/usb-video/run_adapter_tests.py
+C:\Python311\python.exe firmware/usb-audio/run_host_tests.py
+C:\Python311\python.exe firmware/usb-audio/run_adapter_tests.py
+C:\Python311\python.exe firmware/usb-video/run_host_tests.py
+C:\Python311\python.exe firmware/usb-video/run_adapter_tests.py
+cmake -S firmware/protracker -B firmware/protracker/build/host -G "Visual Studio 17 2022" -A x64
+cmake --build firmware/protracker/build/host --config Debug --target capture_native_tests capture_padded_tests mod_tests
+ctest --test-dir firmware/protracker/build/host -C Debug -R "tracker_capture_|mod_document_editor_player_usb|mod_starter_bank|breakbeat_demo_mod" --output-on-failure
+```
+
+Current local results:
+
+| Test set | Result and scope |
+| --- | --- |
+| UAC portable + actual SDK adapter | **4/4 CTest targets pass**: two portable interface profiles and two fake-SDK adapter profiles, built with `/W4 /WX`. Includes PCM/source immutability, FIFO/epoch/backpressure bounds, six 60-second producer simulations with independent clocks at ±500 ppm, the 12.311-second scheduling-jitter regression and stale-data-free restart, descriptor/control routing, DMA ownership, reset/reopen and permanent shutdown. |
+| UVC portable stream/control | **4/4 CTest targets pass**, native and padded modes, with `/W4 /WX`. Reconstructs the complete 115,200/122,880-byte frames and verifies authentic fragment metadata, boundary leases, EOF/FID, bounded controls and reset lifetime. |
+| UVC actual SDK adapter | **2/2 CTest targets pass**, native and padded fake-SDK profiles, with `/W4 /WX`. Checks busy/incomplete DMA ownership, malformed OUT stall, configuration/reset, IRQ masks and permanent shutdown. |
+| Tracker capture renderer | **2/2 focused CTest targets pass**, native and padded, Debug with `/W4 /WX`. Checks every row start across four views, exact pixels/black margins, buffer guards, invalid input and full-frame packet reconstruction. |
+| Tracker audio renderer | **3/3 focused CTest targets pass** for document/player, starter and breakbeat MOD paths. Checks legacy SPK/ST behavior, original stereo tap, one renderer advance and song/sample/bank-preview panning. |
+| Protected request policy | **1/1 focused unittest passes** for verified current MOD baseline/profile and UAC/padded-video flag constraints. |
+
+The PHY host test remains independently reproducible:
+
+```powershell
 cmake -S firmware/usb-diag -B firmware/usb-diag/build/host -G "Visual Studio 17 2022" -A x64
 cmake --build firmware/usb-diag/build/host --config Debug --target hs_phy_probe_tests
 ctest --test-dir firmware/usb-diag/build/host -C Debug -R bounded_usb1_phy_probe --output-on-failure
 ```
 
-Use Debug for the PHY test so assertions stay enabled. Host tests establish
-boundedness, packet ownership, conversion, and cleanup contracts; they do not
-establish hardware high-speed or UVC success.
+Use Debug so assertions stay enabled. Local tests establish boundedness,
+ownership, conversion and lifecycle contracts; they do not establish host
+receipt, iPad compatibility, audible output or high-speed operation.
+
+## Remaining combined-image hardware checks
+
+The first combined run has verified deployment, boot, full-speed enumeration
+and simultaneous stereo audio/video receipt. Remaining checks are:
+
+- Review and deploy the buffered correction with protected readback, then repeat
+  simultaneous recording with clean firmware capture telemetry over sustained
+  playback and collect read-only USB clock values.
+- Local SPK/ST playback, all tracker parts, controls and note audition while USB
+  capture runs; confirm playback/edit screen changes and sustained received cadence.
+- Video/audio close and reopen, USB reconnect/reset and fresh negotiation.
+- CDC UBOOT entry while capture is active, permanent DMA quiescence and actual
+  bootloader enumeration, followed by the protected boot/observation workflow.
+- The padded image on the affected iPad app: clear text, correct layout and
+  changing frames. Keep this pending until the user physically verifies it.
+
+Raw 240 × 240 YUY2 at 30 fps needs **3,456,000 image bytes/s**, so that rate still
+requires a working high-speed path or a different encoding/mode. The combined
+full-speed implementation does not establish USB1 high-speed support.

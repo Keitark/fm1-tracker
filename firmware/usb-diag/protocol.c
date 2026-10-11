@@ -5,11 +5,17 @@
 #include "protocol.h"
 #include <string.h>
 #include <stdio.h>
+#ifdef FM1_TARGET_PI32V2
+#include "asm/clock.h"
+#endif
 #ifdef FM1_USB_HS_PHY_PROBE
 #include "hs_phy_probe.h"
 #endif
 #ifdef FM1_UVC_SCREEN
 #include "fm1_uvc.h"
+#endif
+#ifdef FM1_UAC_AUDIO
+#include "fm1_usb_audio_target.h"
 #endif
 #ifdef FM1_MDX_PLAYER
 #include "fm1_mdx_usb.h"
@@ -45,6 +51,19 @@ static uint32_t crc_byte(uint32_t c, uint8_t b) {
 }
 static void command(fm1_diag_protocol *p, uint32_t now, fm1_diag_reply reply, void *ctx, int final) {
     char out[64]; uint32_t a,b; size_t n=strlen(p->line),i;
+#ifdef FM1_TARGET_PI32V2
+    if(!strcmp(p->line,"USB CLOCK STATUS")) {
+        snprintf(out,sizeof(out),"USB CLOCK sys=%d lsb=%d\n",clk_get("sys"),clk_get("lsb"));
+        reply(ctx,out);return;
+    }
+#endif
+#ifdef FM1_UAC_AUDIO
+    if(!strcmp(p->line,"USB AUDIO STATUS")) {
+        char audio[384];
+        fm1_usb_audio_target_status(audio,sizeof(audio));
+        reply(ctx,audio);return;
+    }
+#endif
 #ifdef FM1_UVC_SCREEN
     if(!strcmp(p->line,"USB VIDEO STATUS")) {
         fm1_uvc_status state;char video[256];

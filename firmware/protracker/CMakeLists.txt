@@ -25,6 +25,22 @@ add_test(NAME active_bank_parser_import COMMAND bank_tests
 add_test(NAME breakbeat_demo_mod COMMAND mod_tests --probe
     ${CMAKE_CURRENT_SOURCE_DIR}/samples/FM1BREAK.MOD)
 
+foreach(profile native padded)
+    add_executable(capture_${profile}_tests tests/test_capture.c
+        ../usb-video/tracker_capture.c ../usb-video/uvc_stream.c)
+    target_include_directories(capture_${profile}_tests PRIVATE ../usb-video)
+    target_link_libraries(capture_${profile}_tests PRIVATE fm1_mod)
+    if(profile STREQUAL padded)
+        target_compile_definitions(capture_${profile}_tests PRIVATE FM1_UVC_IPAD_PAD=1)
+    endif()
+    if(MSVC)
+        target_compile_options(capture_${profile}_tests PRIVATE /W4 /WX)
+    else()
+        target_compile_options(capture_${profile}_tests PRIVATE -Wall -Wextra -Werror)
+    endif()
+    add_test(NAME tracker_capture_${profile} COMMAND capture_${profile}_tests)
+endforeach()
+
 add_executable(mod_view_preview tools/render_view_host.c)
 target_link_libraries(mod_view_preview PRIVATE fm1_mod)
 

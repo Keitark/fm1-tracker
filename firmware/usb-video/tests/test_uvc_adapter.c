@@ -45,12 +45,12 @@ void usb_write_txcsr(usb_dev id,u32 ep,u32 value)
 }
 u32 usb_read_txcsr(usb_dev id,u32 ep){CHECK(id==0 && ep==4);return txcsr;}
 void usb_write_ep_cnt(usb_dev id,u32 ep,u32 length)
-{CHECK(id==0 && ep==4 && length<=962);packet_length=length;}
+{CHECK(id==0 && ep==4 && length<=642);packet_length=length;}
 void usb_set_dma_taddr(usb_dev id,u32 ep,void *p)
 {CHECK(id==0 && ep==4);dma=p;}
 u32 usb_g_ep_config(usb_dev id,u32 ep,u32 type,u32 irq,u8 *p,u32 length)
 {
-    CHECK(id==0 && ep==0x84 && type==1 && irq==1 && length==962);
+    CHECK(id==0 && ep==0x84 && type==1 && irq==1 && length==642);
     CHECK(!(txcsr&1u));dma=p;txcsr=BIT(14);interrupt_enabled=1;return 0;
 }
 void usb_write_txmaxp(usb_dev id,u32 ep,u32 value)
@@ -110,14 +110,14 @@ static void complete_transaction(void)
     txcsr&=~1u;
     fn(&device,4);
 }
-static fm1_uvc_write queue_rows(uint8_t value)
+static fm1_uvc_write queue_bytes(uint8_t value)
 {
     fm1_uvc_write write;
     fm1_uvc_stream *s=fm1_uvc_stream_get();
     CHECK(fm1_uvc_begin_frame(s,clock_ms)==FM1_UVC_OK);
-    CHECK(fm1_uvc_reserve_rows(s,clock_ms,2,&write)==FM1_UVC_OK);
+    CHECK(fm1_uvc_reserve_bytes(s,clock_ms,&write)==FM1_UVC_OK);
     memset(write.bytes+2,value,write.length-2u);
-    CHECK(fm1_uvc_publish_rows(s,clock_ms,&write)==FM1_UVC_OK);
+    CHECK(fm1_uvc_publish_bytes(s,clock_ms,&write)==FM1_UVC_OK);
     return write;
 }
 
@@ -259,12 +259,12 @@ int main(void)
     vc_error_queries();
     malformed_out_queries();
     commit();alternate(1,1);
-    CHECK(fm1_uvc_capture_enabled() && max_packet==962);
+    CHECK(fm1_uvc_capture_enabled() && max_packet==642);
     CHECK(packet_length==0 && (txcsr&1u) && arm_count==1 && sync_count==1);
     vc_error_queries(); /* Valid/malformed queries cannot restart live video. */
     malformed_out_queries(); /* Invalid OUT cannot overwrite DMA or the commit. */
     s=fm1_uvc_stream_get();
-    (void)queue_rows(0x5a);
+    (void)queue_bytes(0x5a);
     memcpy(previous,dma,sizeof(previous));before=arm_count;
     completion(&device,4); /* An early/spurious callback cannot overwrite DMA. */
     CHECK(arm_count==before && !memcmp(previous,dma,sizeof(previous)));
@@ -276,23 +276,23 @@ int main(void)
     CHECK(s->stats.retries==1);
     before=arm_count;
     complete_transaction();
-    CHECK(packet_length==962 && s->stats.packets_sent==1 && arm_count==before+1);
+    CHECK(packet_length==642 && s->stats.packets_sent==1 && arm_count==before+1);
     fm1_uvc_test_irq_mask=0;
     CHECK(fm1_uvc_get_status(&status)==1 && status.active && status.configured &&
           status.committed && status.alt==1 && status.packets_sent==1);
     CHECK(fm1_uvc_test_irq_mask==0 && fm1_uvc_get_status(NULL)==0);
-    CHECK(dma[0]==2 && (dma[1]&FM1_UVC_HEADER_EOH) && dma[2]==0x5a && dma[961]==0x5a);
+    CHECK(dma[0]==2 && (dma[1]&FM1_UVC_HEADER_EOH) && dma[2]==0x5a && dma[641]==0x5a);
     memcpy(previous,dma,sizeof(previous));before=arm_count;
     completion(&device,4);
     CHECK(arm_count==before && !memcmp(previous,dma,sizeof(previous)));
     complete_transaction(); /* No data still arms a successful empty packet. */
     CHECK(packet_length==0 && (txcsr&1u) && arm_count==before+1);
 
-    CHECK(fm1_uvc_reserve_rows(s,clock_ms,2,&reservation)==FM1_UVC_OK);
+    CHECK(fm1_uvc_reserve_bytes(s,clock_ms,&reservation)==FM1_UVC_OK);
     alternate(0,1);
     CHECK(!fm1_uvc_capture_enabled() && !completion && !endpoint_enabled && !interrupt_enabled);
     CHECK(!(txcsr&1u) && packet_length==0);
-    CHECK(fm1_uvc_publish_rows(s,clock_ms,&reservation)==FM1_UVC_STALE);
+    CHECK(fm1_uvc_publish_bytes(s,clock_ms,&reservation)==FM1_UVC_STALE);
     alternate(1,1);
     reset_handler(&device,UINT32_MAX);
     CHECK(!fm1_uvc_capture_enabled() && !completion && !endpoint_enabled);

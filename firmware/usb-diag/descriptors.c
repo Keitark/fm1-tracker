@@ -2,7 +2,7 @@
 #include "usb/device/usb_stack.h"
 /* Private bench identity, inherited Jieli SDK VID/PID pair, NOT a newly
  * assigned/public VID. No chip/flash serial or key is exposed. */
-#ifdef FM1_UVC_SCREEN
+#if defined(FM1_UVC_SCREEN) || defined(FM1_UAC_AUDIO)
 /* IAD composite: CDC0/1 and Video2/3 retain distinct interface associations. */
 const u8 fm1_usb_device_descriptor[]={18,1,0,2,0xef,2,1,64,0x54,0x36,0x55,0x51,0,2,1,2,0,1};
 #else
