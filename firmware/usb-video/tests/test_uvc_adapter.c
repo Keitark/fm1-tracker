@@ -121,6 +121,118 @@ static fm1_uvc_write queue_rows(uint8_t value)
     return write;
 }
 
+static void read_error(uint8_t expected)
+{
+    struct usb_ctrlrequest r=request(0xa1,FM1_UVC_GET_CUR,0x0200,2,1);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_STAGE_IN &&
+          in_length==1 && in_bytes[0]==expected);
+    CHECK(setup(&r)==1 && in_length==1 && in_bytes[0]==FM1_UVC_ERROR_NONE);
+}
+
+static void vc_error_queries(void)
+{
+    struct usb_ctrlrequest r;
+    fm1_uvc_status prior,after;
+    uint32_t arms=arm_count;
+    uint32_t reads=read_count;
+    unsigned i;
+    CHECK(fm1_uvc_get_status(&prior)==1);
+
+    memset(in_bytes,0xa5,sizeof(in_bytes));
+    r=request(0xa1,FM1_UVC_GET_INFO,0x0200,2,1);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_STAGE_IN &&
+          in_length==1 && in_bytes[0]==1); /* The VC error control is GET-only. */
+    for(i=1;i<sizeof(in_bytes);++i)CHECK(in_bytes[i]==0xa5);
+
+    r=request(0xa1,FM1_UVC_GET_CUR,0x0200,2,1);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_STAGE_IN &&
+          in_length==1 && in_bytes[0]==FM1_UVC_ERROR_NONE);
+    for(i=1;i<sizeof(in_bytes);++i)CHECK(in_bytes[i]==0xa5);
+    r=request(0xa1,FM1_UVC_GET_INFO,0x0200,2,255);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_STAGE_IN &&
+          in_length==1 && in_bytes[0]==1);
+    for(i=1;i<sizeof(in_bytes);++i)CHECK(in_bytes[i]==0xa5);
+
+    /* An unsupported selector still stalls; its error can then be read once. */
+    r=request(0xa1,FM1_UVC_GET_CUR,0x9900,2,1);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_SET_STALL && in_length==0);
+    r=request(0xa1,FM1_UVC_GET_CUR,0x0200,2,1);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_STAGE_IN &&
+          in_length==1 && in_bytes[0]==FM1_UVC_ERROR_INVALID_CONTROL);
+    CHECK(setup(&r)==1 && in_length==1 && in_bytes[0]==FM1_UVC_ERROR_NONE);
+
+    /* A zero-length query and a SET to the GET-only control remain invalid. */
+    r=request(0xa1,FM1_UVC_GET_INFO,0x0200,2,0);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_SET_STALL && in_length==0);
+    r=request(0x21,FM1_UVC_SET_CUR,0x0200,2,1);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_SET_STALL && in_length==0);
+    r=request(0xa1,FM1_UVC_GET_CUR,0x0200,2,1);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_STAGE_IN &&
+          in_length==1 && in_bytes[0]==FM1_UVC_ERROR_INVALID_REQUEST);
+
+    /* Class wIndex carries an entity in its high byte. Known terminals have
+     * no controls; unknown VC/VS entities report INVALID_UNIT through EP0. */
+    r=request(0xa1,FM1_UVC_GET_CUR,0x0200,0x0102,1);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_SET_STALL && in_length==0);
+    read_error(FM1_UVC_ERROR_INVALID_CONTROL);
+    r=request(0xa1,FM1_UVC_GET_CUR,0x0200,0x0302,1);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_SET_STALL && in_length==0);
+    read_error(FM1_UVC_ERROR_INVALID_UNIT);
+    r=request(0x21,FM1_UVC_SET_CUR,0x0200,0x0103,26);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_SET_STALL && in_length==0);
+    read_error(FM1_UVC_ERROR_INVALID_UNIT);
+
+    /* Entity routing does not extend the standard/vendor interface whitelist.
+     * Returning zero leaves these high-index requests to the existing policy. */
+    r=request(0x81,10,0,0x0102,1);
+    CHECK(setup(&r)==0 && in_length==0);
+    r=request(0xc1,FM1_UVC_GET_CUR,0x0200,0x0102,1);
+    CHECK(setup(&r)==0 && in_length==0);
+    r=request(0xc1,FM1_UVC_GET_CUR,0x0200,2,1);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_SET_STALL && in_length==0);
+
+    CHECK(fm1_uvc_get_status(&after)==1 && arm_count==arms && read_count==reads);
+    CHECK(prior.active==after.active && prior.committed==after.committed &&
+          prior.alt==after.alt && prior.configured==after.configured &&
+          prior.packets_sent==after.packets_sent);
+}
+
+static void malformed_out_queries(void)
+{
+    static const uint32_t lengths[]={0,25,27,65535};
+    struct usb_ctrlrequest r;
+    fm1_uvc_status prior,after;
+    uint8_t previous[1024];
+    uint32_t arms=arm_count,reads=read_count,csr=txcsr,bytes=packet_length;
+    unsigned i;
+    CHECK(fm1_uvc_get_status(&prior)==1);
+    if(dma)memcpy(previous,dma,sizeof(previous));
+    for(i=0;i<sizeof(lengths)/sizeof(lengths[0]);++i) {
+        uint32_t stalls=hardware_stalls;
+        r=request(0x21,FM1_UVC_SET_CUR,0x0200,3,26);
+        CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_STAGE_OUT && receive);
+        count0=lengths[i];
+        CHECK(receive(&device,&r)==USB_EP0_SET_STALL && hardware_stalls==stalls+1);
+        read_error(FM1_UVC_ERROR_INVALID_REQUEST);
+    }
+
+    /* A superseded malformed OUT must preserve the newer request's error. */
+    r=request(0x21,FM1_UVC_SET_CUR,0x0200,3,26);
+    CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_STAGE_OUT);
+    {struct usb_ctrlrequest newer=request(0xa1,FM1_UVC_GET_CUR,0x0200,0x0302,1);
+     CHECK(setup(&newer)==1 && device.bsetup_phase==USB_EP0_SET_STALL);}
+    count0=25;
+    CHECK(receive(&device,&r)==USB_EP0_SET_STALL);
+    read_error(FM1_UVC_ERROR_INVALID_UNIT);
+
+    CHECK(fm1_uvc_get_status(&after)==1 && arm_count==arms && read_count==reads);
+    CHECK(txcsr==csr && packet_length==bytes);
+    if(dma)CHECK(!memcmp(previous,dma,sizeof(previous)));
+    CHECK(prior.active==after.active && prior.committed==after.committed &&
+          prior.alt==after.alt && prior.configured==after.configured &&
+          prior.packets_sent==after.packets_sent);
+}
+
 int main(void)
 {
     uint8_t descriptors[159], previous[1024];
@@ -144,9 +256,13 @@ int main(void)
     r=request(0x81,0,0,2,2);
     CHECK(setup(&r)==1 && device.bsetup_phase==USB_EP0_STAGE_IN &&
           in_length==2 && in_bytes[0]==0 && in_bytes[1]==0);
+    vc_error_queries();
+    malformed_out_queries();
     commit();alternate(1,1);
     CHECK(fm1_uvc_capture_enabled() && max_packet==962);
     CHECK(packet_length==0 && (txcsr&1u) && arm_count==1 && sync_count==1);
+    vc_error_queries(); /* Valid/malformed queries cannot restart live video. */
+    malformed_out_queries(); /* Invalid OUT cannot overwrite DMA or the commit. */
     s=fm1_uvc_stream_get();
     (void)queue_rows(0x5a);
     memcpy(previous,dma,sizeof(previous));before=arm_count;
@@ -193,6 +309,7 @@ int main(void)
     reads=read_count;before=hardware_stalls;count0=25;
     CHECK(receive(&device,&r)==USB_EP0_SET_STALL && read_count==reads);
     CHECK(hardware_stalls==before+1);
+    read_error(FM1_UVC_ERROR_INVALID_REQUEST);
     r=request(0x21,FM1_UVC_SET_CUR,0x0200,3,26);
     CHECK(setup(&r)==1);
     {struct usb_ctrlrequest other=request(0xa1,0x21,0,0,7);CHECK(setup(&other)==0);}

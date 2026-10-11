@@ -150,12 +150,21 @@ static u32 receive_control(struct usb_device_t *device, struct usb_ctrlrequest *
     uint8_t payload[FM1_UVC_CONTROL_BYTES];
     fm1_uvc_control_reply reply;
     int result;
+    u32 received;
     if (usb_device2id(device) != USB0 || request->bRequestType != 0x21 ||
         capture_shutdown ||
         request->bRequest != FM1_UVC_SET_CUR || request->wIndex != FM1_UVC_VS_INTERFACE ||
-        request->wLength != FM1_UVC_CONTROL_BYTES ||
-        usb_read_count0(USB0) != FM1_UVC_CONTROL_BYTES) {
+        request->wLength != FM1_UVC_CONTROL_BYTES) {
         fm1_uvc_control_cancel_pending(&fm1_uvc_control_state);
+        return receive_stall(device);
+    }
+    received=usb_read_count0(USB0);
+    if(received!=FM1_UVC_CONTROL_BYTES) {
+        /* Classify an incomplete/oversized current OUT without reading any
+         * payload. The core checks the saved token first: a superseded OUT
+         * cannot overwrite a newer request error or cancel its reservation. */
+        (void)fm1_uvc_control_out(&fm1_uvc_control_state,ep0_token,
+                                NULL,(size_t)received,&reply);
         return receive_stall(device);
     }
     usb_read_ep0(USB0, payload, sizeof(payload));
@@ -243,7 +252,13 @@ int fm1_uvc_setup_filter(struct usb_device_t *device, struct usb_ctrlrequest *re
     fm1_uvc_control_cancel_pending(&fm1_uvc_control_state);
     ep0_token = 0;
     if (recipient == USB_RECIP_INTERFACE &&
-        (request->wIndex == FM1_UVC_VC_INTERFACE || request->wIndex == FM1_UVC_VS_INTERFACE)) {
+        ((request->wIndex == FM1_UVC_VC_INTERFACE || request->wIndex == FM1_UVC_VS_INTERFACE) ||
+         ((request->bRequestType==0x21 || request->bRequestType==0xa1) &&
+          ((request->wIndex & 0xffu)==FM1_UVC_VC_INTERFACE ||
+           (request->wIndex & 0xffu)==FM1_UVC_VS_INTERFACE)))) {
+        /* Only class/interface requests carry an entity ID in wIndex's high
+         * byte. Route them to the bounded core for request-error reporting;
+         * standard requests still require an exact interface number. */
         /* Interface GET_STATUS is routed to the class handler by this SDK.
          * Supply the bounded standard response here; no class controls. */
         if(request->bRequestType==0x81 && request->bRequest==USB_REQ_GET_STATUS &&

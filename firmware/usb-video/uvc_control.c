@@ -97,6 +97,7 @@ void fm1_uvc_control_reset(fm1_uvc_control *c)
 {
     c->token = next_token(c->token);
     c->configured = c->committed = c->alt = c->pending_selector = 0;
+    c->request_error = FM1_UVC_ERROR_NONE;
     fixed_mode(c->probe);
     fixed_mode(c->commit);
 }
@@ -116,11 +117,19 @@ int fm1_uvc_control_configure(fm1_uvc_control *c, uint8_t configuration)
     return FM1_UVC_CONTROL_ACK;
 }
 
-static int in_reply(fm1_uvc_control_reply *r, uint16_t requested, uint16_t available)
+static int request_stall(fm1_uvc_control *c, uint8_t error)
+{
+    c->request_error = error;
+    return FM1_UVC_CONTROL_STALL;
+}
+
+static int in_reply(fm1_uvc_control *c, fm1_uvc_control_reply *r,
+                    uint16_t requested, uint16_t available)
 {
     if (!requested)
-        return FM1_UVC_CONTROL_STALL;
+        return request_stall(c, FM1_UVC_ERROR_INVALID_REQUEST);
     r->length = requested < available ? requested : available;
+    c->request_error = FM1_UVC_ERROR_NONE;
     return FM1_UVC_CONTROL_IN;
 }
 
@@ -131,7 +140,7 @@ static int standard_interface(fm1_uvc_control *c, const fm1_uvc_setup *s,
         return FM1_UVC_CONTROL_STALL;
     if (s->request_type == 0x81 && s->request == 10 && s->value == 0) {
         r->data[0] = s->index == FM1_UVC_VS_INTERFACE ? c->alt : 0;
-        return in_reply(r, s->length, 1);
+        return in_reply(c, r, s->length, 1);
     }
     if (s->request_type != 0x01 || s->request != 11 || s->length != 0)
         return FM1_UVC_CONTROL_STALL;
@@ -155,46 +164,76 @@ int fm1_uvc_control_setup(fm1_uvc_control *c, const fm1_uvc_setup *s,
     fm1_uvc_control_cancel_pending(c);
     r->token = c->token;
     if (!c->configured)
+        return request_stall(c, FM1_UVC_ERROR_WRONG_STATE);
+    if (s->request_type == 0x01 || s->request_type == 0x81) {
+        int result = standard_interface(c, s, r);
+        c->request_error = result == FM1_UVC_CONTROL_STALL ?
+            FM1_UVC_ERROR_INVALID_REQUEST : FM1_UVC_ERROR_NONE;
+        return result;
+    }
+    if (s->request_type != 0x21 && s->request_type != 0xa1) {
+        if ((s->request_type & 0x60u) == 0x20u)
+            return request_stall(c, FM1_UVC_ERROR_INVALID_REQUEST);
+        /* Vendor/device requests are not video class requests. */
         return FM1_UVC_CONTROL_STALL;
-    if (s->request_type == 0x01 || s->request_type == 0x81)
-        return standard_interface(c, s, r);
-    if (s->index != FM1_UVC_VS_INTERFACE || (s->value & 0xffu))
-        return FM1_UVC_CONTROL_STALL;
+    }
+    if ((s->index & 0xffu) != FM1_UVC_VC_INTERFACE &&
+        (s->index & 0xffu) != FM1_UVC_VS_INTERFACE)
+        return request_stall(c, FM1_UVC_ERROR_INVALID_REQUEST);
+    if (s->value & 0xffu)
+        return request_stall(c, FM1_UVC_ERROR_INVALID_REQUEST);
+    if (s->index >> 8) {
+        /* Camera/output terminal IDs exist, but have no advertised controls. */
+        uint8_t error = (s->index & 0xffu) == FM1_UVC_VC_INTERFACE &&
+            (s->index >> 8) <= 2u ? FM1_UVC_ERROR_INVALID_CONTROL : FM1_UVC_ERROR_INVALID_UNIT;
+        return request_stall(c, error);
+    }
     selector = (uint8_t)(s->value >> 8);
+    if (s->index == FM1_UVC_VC_INTERFACE) {
+        if (selector != FM1_UVC_REQUEST_ERROR_SELECTOR)
+            return request_stall(c, FM1_UVC_ERROR_INVALID_CONTROL);
+        if (s->request_type != 0xa1 ||
+            (s->request != FM1_UVC_GET_CUR && s->request != FM1_UVC_GET_INFO))
+            return request_stall(c, FM1_UVC_ERROR_INVALID_REQUEST);
+        /* Preserve the prior code in the response before successful dispatch
+         * clears it, matching TinyUSB's handle_video_ctl_cs_req/callback. */
+        r->data[0] = s->request == FM1_UVC_GET_CUR ? c->request_error : 1u;
+        return in_reply(c, r, s->length, 1);
+    }
     if (selector != FM1_UVC_PROBE_SELECTOR && selector != FM1_UVC_COMMIT_SELECTOR)
-        return FM1_UVC_CONTROL_STALL;
+        return request_stall(c, FM1_UVC_ERROR_INVALID_CONTROL);
     if (s->request_type == 0x21 && s->request == FM1_UVC_SET_CUR) {
         if (s->length != FM1_UVC_CONTROL_BYTES)
-            return FM1_UVC_CONTROL_STALL;
+            return request_stall(c, FM1_UVC_ERROR_INVALID_REQUEST);
         c->pending_selector = selector;
         r->length = FM1_UVC_CONTROL_BYTES;
         return FM1_UVC_CONTROL_OUT;
     }
     if (s->request_type != 0xa1)
-        return FM1_UVC_CONTROL_STALL;
+        return request_stall(c, FM1_UVC_ERROR_INVALID_REQUEST);
     switch (s->request) {
     case FM1_UVC_GET_CUR:
         memcpy(r->data, selector == FM1_UVC_PROBE_SELECTOR ? c->probe : c->commit,
                FM1_UVC_CONTROL_BYTES);
-        return in_reply(r, s->length, FM1_UVC_CONTROL_BYTES);
+        return in_reply(c, r, s->length, FM1_UVC_CONTROL_BYTES);
     case FM1_UVC_GET_MIN:
     case FM1_UVC_GET_MAX:
     case FM1_UVC_GET_DEF:
         fixed_mode(r->data);
-        return in_reply(r, s->length, FM1_UVC_CONTROL_BYTES);
+        return in_reply(c, r, s->length, FM1_UVC_CONTROL_BYTES);
     case FM1_UVC_GET_RES:
         /* Match SDK probe/commit resolution: index steps are one; the sole
          * discrete interval and unsupported/readonly fields have no step. */
         r->data[2] = r->data[3] = 1;
-        return in_reply(r, s->length, FM1_UVC_CONTROL_BYTES);
+        return in_reply(c, r, s->length, FM1_UVC_CONTROL_BYTES);
     case FM1_UVC_GET_LEN:
         r->data[0] = FM1_UVC_CONTROL_BYTES;
-        return in_reply(r, s->length, 2);
+        return in_reply(c, r, s->length, 2);
     case FM1_UVC_GET_INFO:
         r->data[0] = 3; /* GET and SET, synchronous; no auto-update. */
-        return in_reply(r, s->length, 1);
+        return in_reply(c, r, s->length, 1);
     default:
-        return FM1_UVC_CONTROL_STALL;
+        return request_stall(c, FM1_UVC_ERROR_INVALID_REQUEST);
     }
 }
 
@@ -211,11 +250,13 @@ int fm1_uvc_control_out(fm1_uvc_control *c, uint32_t token,
         return FM1_UVC_CONTROL_STALL; /* Do not cancel a newer valid transfer. */
     selector = c->pending_selector;
     c->pending_selector = 0;
-    if (!c->configured || !selector || !payload || length != FM1_UVC_CONTROL_BYTES)
-        return FM1_UVC_CONTROL_STALL;
+    if (!c->configured || !selector)
+        return request_stall(c, FM1_UVC_ERROR_WRONG_STATE);
+    if (!payload || length != FM1_UVC_CONTROL_BYTES)
+        return request_stall(c, FM1_UVC_ERROR_INVALID_REQUEST);
     if (payload[2] > 1 || payload[3] > 1 ||
         (selector == FM1_UVC_COMMIT_SELECTOR && (payload[2] != 1 || payload[3] != 1)))
-        return FM1_UVC_CONTROL_STALL;
+        return request_stall(c, FM1_UVC_ERROR_OUT_OF_RANGE);
     /* The sole mode is the closest available interval for every uint32 host
      * request, including zero/default. Unsupported uncompressed quality/rate
      * hints, sizes and delays are normalized to the fixed canonical reply. */
@@ -225,5 +266,6 @@ int fm1_uvc_control_out(fm1_uvc_control *c, uint32_t token,
         fixed_mode(c->commit);
         c->committed = 1;
     }
+    c->request_error = FM1_UVC_ERROR_NONE;
     return FM1_UVC_CONTROL_ACK;
 }

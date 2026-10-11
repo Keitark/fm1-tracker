@@ -360,6 +360,138 @@ static void malformed_and_unsupported_setup_stall(void)
     assert(fm1_uvc_control_setup(&control, &setups[0], 0) == FM1_UVC_CONTROL_STALL);
 }
 
+static fm1_uvc_control_reply get_error(uint8_t code, uint16_t length)
+{
+    fm1_uvc_control_reply reply;
+    fm1_uvc_setup setup = request(0xa1, code, 0x0200, 2, length);
+    assert(fm1_uvc_control_setup(&control, &setup, &reply) == FM1_UVC_CONTROL_IN);
+    return reply;
+}
+
+static void request_error_control_is_get_only_and_bounded(void)
+{
+    fm1_uvc_control_reply reply, final;
+    uint8_t payload[26];
+    unsigned i;
+    configured();
+    reply = get_error(FM1_UVC_GET_CUR, 1);
+    assert(reply.length == 1 && reply.data[0] == FM1_UVC_ERROR_NONE);
+    assert(reply.event == FM1_UVC_EVENT_NONE && !control.committed && !control.alt);
+    reply = get_error(FM1_UVC_GET_INFO, 0xffff);
+    assert(reply.length == 1 && reply.data[0] == 1); /* GET only, not SET. */
+    for (i = 1; i < sizeof(reply.data); ++i)
+        assert(reply.data[i] == 0);
+    memcpy(payload, control.probe, sizeof(payload));
+    reply = set(FM1_UVC_COMMIT_SELECTOR);
+    final = get_error(FM1_UVC_GET_CUR, 2);
+    assert(final.length == 1 && final.data[0] == FM1_UVC_ERROR_NONE);
+    assert(!control.pending_selector);
+    assert(fm1_uvc_control_out(&control, reply.token, payload, 26, &final) == FM1_UVC_CONTROL_STALL);
+    assert(!control.committed && control.request_error == FM1_UVC_ERROR_NONE);
+}
+
+static void request_error_rejects_malformed_vc_requests(void)
+{
+    static const struct {
+        fm1_uvc_setup setup;
+        uint8_t error;
+    } cases[] = {
+        {{0xa1, FM1_UVC_GET_CUR, 0x0200, 0x0302, 1}, FM1_UVC_ERROR_INVALID_UNIT},
+        {{0xa1, FM1_UVC_GET_CUR, 0x0200, 0x0102, 1}, FM1_UVC_ERROR_INVALID_CONTROL},
+        {{0xa1, FM1_UVC_GET_CUR, 0x0200, 0x0202, 1}, FM1_UVC_ERROR_INVALID_CONTROL},
+        {{0xa1, FM1_UVC_GET_CUR, 0x0100, 2, 1}, FM1_UVC_ERROR_INVALID_CONTROL},
+        {{0xa1, FM1_UVC_GET_CUR, 0x0300, 2, 1}, FM1_UVC_ERROR_INVALID_CONTROL},
+        {{0xa1, FM1_UVC_GET_CUR, 0x0201, 2, 1}, FM1_UVC_ERROR_INVALID_REQUEST},
+        {{0xa1, FM1_UVC_GET_CUR, 0x0200, 0, 1}, FM1_UVC_ERROR_INVALID_REQUEST},
+        {{0xa1, FM1_UVC_GET_CUR, 0x0200, 2, 0}, FM1_UVC_ERROR_INVALID_REQUEST},
+        {{0xa1, FM1_UVC_GET_INFO, 0x0200, 2, 0}, FM1_UVC_ERROR_INVALID_REQUEST},
+        {{0x21, FM1_UVC_GET_CUR, 0x0200, 2, 1}, FM1_UVC_ERROR_INVALID_REQUEST},
+        {{0x21, FM1_UVC_SET_CUR, 0x0200, 2, 1}, FM1_UVC_ERROR_INVALID_REQUEST},
+        {{0xa1, FM1_UVC_GET_LEN, 0x0200, 2, 2}, FM1_UVC_ERROR_INVALID_REQUEST},
+        {{0xa1, FM1_UVC_GET_MIN, 0x0200, 2, 1}, FM1_UVC_ERROR_INVALID_REQUEST},
+        {{0xa1, FM1_UVC_GET_MAX, 0x0200, 2, 1}, FM1_UVC_ERROR_INVALID_REQUEST},
+        {{0xa1, FM1_UVC_GET_RES, 0x0200, 2, 1}, FM1_UVC_ERROR_INVALID_REQUEST},
+        {{0xa1, FM1_UVC_GET_DEF, 0x0200, 2, 1}, FM1_UVC_ERROR_INVALID_REQUEST},
+        {{0xa1, 0xff, 0x0200, 2, 1}, FM1_UVC_ERROR_INVALID_REQUEST},
+        {{0xa2, FM1_UVC_GET_CUR, 0x0200, 2, 1}, FM1_UVC_ERROR_INVALID_REQUEST},
+    };
+    fm1_uvc_control_reply reply;
+    unsigned i;
+    configured();
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        assert(fm1_uvc_control_setup(&control, &cases[i].setup, &reply) == FM1_UVC_CONTROL_STALL);
+        assert(reply.length == 0 && reply.event == FM1_UVC_EVENT_NONE);
+        assert(control.request_error == cases[i].error);
+        assert(!control.pending_selector && !control.committed && !control.alt);
+        reply = get_error(FM1_UVC_GET_CUR, 1);
+        assert(reply.length == 1 && reply.data[0] == cases[i].error);
+        assert(control.request_error == FM1_UVC_ERROR_NONE);
+        reply = get_error(FM1_UVC_GET_CUR, 1);
+        assert(reply.data[0] == FM1_UVC_ERROR_NONE);
+    }
+    /* Vendor requests do not consume or replace a video class request error. */
+    {
+        fm1_uvc_setup bad = request(0xa1, FM1_UVC_GET_CUR, 0x0300, 2, 1);
+        fm1_uvc_setup vendor = request(0xc1, FM1_UVC_GET_CUR, 0x0200, 2, 1);
+        assert(fm1_uvc_control_setup(&control, &bad, &reply) == FM1_UVC_CONTROL_STALL);
+        assert(fm1_uvc_control_setup(&control, &vendor, &reply) == FM1_UVC_CONTROL_STALL);
+        reply = get_error(FM1_UVC_GET_CUR, 1);
+        assert(reply.data[0] == FM1_UVC_ERROR_INVALID_CONTROL);
+    }
+    assert(fm1_uvc_control_configure(&control, 0) == FM1_UVC_CONTROL_ACK);
+    {
+        fm1_uvc_setup query = request(0xa1, FM1_UVC_GET_CUR, 0x0200, 2, 1);
+        assert(fm1_uvc_control_setup(&control, &query, &reply) == FM1_UVC_CONTROL_STALL);
+        assert(reply.length == 0 && control.request_error == FM1_UVC_ERROR_WRONG_STATE);
+    }
+}
+
+static void request_error_lifecycle_and_stale_out_isolation(void)
+{
+    fm1_uvc_setup bad = request(0xa1, FM1_UVC_GET_CUR, 0x0300, 3, 26);
+    fm1_uvc_setup standard = request(0x81, 10, 0, 2, 1);
+    fm1_uvc_control_reply old, newer, reply;
+    uint8_t payload[26];
+    configured();
+    assert(fm1_uvc_control_setup(&control, &bad, &reply) == FM1_UVC_CONTROL_STALL);
+    fm1_uvc_control_cancel_pending(&control);
+    assert(control.request_error == FM1_UVC_ERROR_INVALID_CONTROL);
+    reply = get_error(FM1_UVC_GET_INFO, 1);
+    assert(reply.data[0] == 1 && control.request_error == FM1_UVC_ERROR_NONE);
+    assert(fm1_uvc_control_setup(&control, &bad, &reply) == FM1_UVC_CONTROL_STALL);
+    (void)get(FM1_UVC_PROBE_SELECTOR, FM1_UVC_GET_CUR, 26);
+    assert(control.request_error == FM1_UVC_ERROR_NONE);
+    assert(fm1_uvc_control_setup(&control, &bad, &reply) == FM1_UVC_CONTROL_STALL);
+    assert(fm1_uvc_control_setup(&control, &standard, &reply) == FM1_UVC_CONTROL_IN);
+    assert(control.request_error == FM1_UVC_ERROR_NONE);
+
+    memcpy(payload, control.probe, sizeof(payload));
+    old = set(FM1_UVC_COMMIT_SELECTOR);
+    newer = set(FM1_UVC_PROBE_SELECTOR);
+    assert(fm1_uvc_control_out(&control, newer.token, payload, 25, &reply) == FM1_UVC_CONTROL_STALL);
+    assert(control.request_error == FM1_UVC_ERROR_INVALID_REQUEST && !control.committed);
+    assert(fm1_uvc_control_out(&control, old.token, payload, 26, &reply) == FM1_UVC_CONTROL_STALL);
+    assert(control.request_error == FM1_UVC_ERROR_INVALID_REQUEST);
+    reply = get_error(FM1_UVC_GET_CUR, 1);
+    assert(reply.data[0] == FM1_UVC_ERROR_INVALID_REQUEST && control.request_error == FM1_UVC_ERROR_NONE);
+
+    newer = set(FM1_UVC_COMMIT_SELECTOR);
+    payload[2] = 2;
+    assert(fm1_uvc_control_out(&control, newer.token, payload, 26, &reply) == FM1_UVC_CONTROL_STALL);
+    assert(control.request_error == FM1_UVC_ERROR_OUT_OF_RANGE && !control.committed);
+    payload[2] = 1;
+    newer = set(FM1_UVC_COMMIT_SELECTOR);
+    /* SETUP starts the transfer; it has not completed successfully yet. */
+    assert(control.request_error == FM1_UVC_ERROR_OUT_OF_RANGE);
+    assert(fm1_uvc_control_out(&control, old.token, payload, 26, &reply) == FM1_UVC_CONTROL_STALL);
+    assert(control.request_error == FM1_UVC_ERROR_OUT_OF_RANGE && control.pending_selector == 2);
+    assert(fm1_uvc_control_out(&control, newer.token, payload, 26, &reply) == FM1_UVC_CONTROL_ACK);
+    assert(control.request_error == FM1_UVC_ERROR_NONE && control.committed);
+    assert(fm1_uvc_control_setup(&control, &bad, &reply) == FM1_UVC_CONTROL_STALL);
+    fm1_uvc_control_reset(&control);
+    assert(control.request_error == FM1_UVC_ERROR_NONE && !control.configured && !control.committed);
+}
+
 int main(void)
 {
     descriptor_walk_and_terminal_chain();
@@ -370,7 +502,10 @@ int main(void)
     interface_alt_requires_config_and_commit();
     reset_and_new_setup_invalidate_pending_transfers();
     malformed_and_unsupported_setup_stall();
-    printf("UVC control: 8 focused test groups passed; state %zu, reply %zu, setup %zu bytes.\n",
+    request_error_control_is_get_only_and_bounded();
+    request_error_rejects_malformed_vc_requests();
+    request_error_lifecycle_and_stale_out_isolation();
+    printf("UVC control: 11 focused test groups passed; state %zu, reply %zu, setup %zu bytes.\n",
            sizeof(fm1_uvc_control), sizeof(fm1_uvc_control_reply), sizeof(fm1_uvc_setup));
     return 0;
 }

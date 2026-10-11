@@ -196,12 +196,41 @@ the cause from the FFmpeg message alone. A compiled, local-only diagnostic is
 retained under ignored `tmp/uvc-camera-diag/`; it activates only a unique exact
 `FM1 Tracker Screen` match and reports HRESULTs without running a capture graph.
 
-Source review also identified missing VideoControl Request Error Code queries
-(`GET_CUR`/`GET_INFO`) as a compatibility gap. Its relationship to this host bind
-failure is unproven. Resolve that control support and complete moving-frame,
-close/reopen, streaming playback and streaming UBOOT checks before qualifying
-the UVC function. The separately tested USB1 diagnostic recovery does not qualify
-the composite stream's active-DMA recovery path.
+Source review identified missing VideoControl Request Error Code queries in
+that first image. The correction below resolves the source gap; its relationship
+to the host bind failure is unproven. Complete moving-frame, close/reopen,
+streaming playback and streaming UBOOT checks before qualifying the UVC function.
+The separately tested USB1 diagnostic recovery does not qualify the composite
+stream's active-DMA recovery path.
+
+### Corrected candidate, not flashed
+
+The current source supports entity 0 / VideoControl interface 2 / selector 2
+`GET_CUR` and `GET_INFO`. Both return at most one byte; `GET_INFO` reports GET-only
+support. `GET_CUR` snapshots the preceding request error before a successful
+video control request clears it. Malformed requests still stall, and stale OUT
+callbacks cannot overwrite the error or pending transfer of a newer request.
+
+Portable control coverage now has **11 focused groups**, alongside the nine
+stream groups. Actual adapter regression checks also pass for bounded VC replies,
+malformed-query stalls and unchanged active-stream/COMMIT state.
+
+The corrected linked application is **490,448 bytes**, SHA-256
+`7ea8b19e2d15e91ac3a540e962a07ea1a71157c939af6103eb045bb8c89c4e0a`.
+Its source/archive/overlay closure and static audit pass; heap remains
+**132,364 bytes**. Control state grows from 60 to 64 bytes in cache BSS; the
+descriptor bytes and ordinary-RAM DMA allocation are unchanged. The prepared
+full image has SHA-256
+`e1f7ff2a21c89304f21bb615777f94bd8459f0406c1c12722ded423aa15a1c94`.
+Its application-only protected plan passes against the verified first composite
+image. **It has not been flashed:** FM-1 remains absent from Windows detection.
+The installed image remains the first composite candidate described above.
+
+The actual adapter now routes class entity requests to the bounded core for
+error classification and records malformed OUT counts without payload reads.
+Adapter tests retrieve errors for known/unknown entities and OUT counts
+0, 25, 27 and 65,535, while preserving newer errors after a stale OUT callback.
+They check unchanged DMA/arm/COMMIT/alternate state with and without active video.
 
 Raw 240 × 240 YUY2 at 30 frames/s requires 3,456,000 image bytes/s, so that target
 needs a working high-speed path or a different video encoding/mode.

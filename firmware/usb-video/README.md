@@ -21,6 +21,7 @@ sample-bank or recorded-audio assets are included.
 | --- | --- |
 | USB path | USB0 full speed; this profile does not enable USB1 |
 | UVC version | 1.0, 26-byte PROBE/COMMIT controls |
+| VC error status | Entity 0 Request Error Code GET_CUR/GET_INFO, bounded to one byte |
 | Host camera name | `FM1 Tracker Screen` |
 | Frame | 240×240, uncompressed YUY2, BT.601 limited range |
 | Advertised frame rate | 5 fps; frame interval 200 ms |
@@ -177,7 +178,7 @@ C:\Python311\python.exe firmware/usb-video/run_adapter_tests.py
 ```
 
 The first runner tests descriptors, exact-size controls, cancellation tokens,
-PROBE/COMMIT/alternates, bounded packet storage, reset/lease lifetime and YUY2
+PROBE/COMMIT/alternates, Request Error Code queries/lifetime, bounded packet storage, reset/lease lifetime and YUY2
 conversion. The adapter runner uses fake SDK callbacks to exercise the actual
 adapter: busy-DMA ownership, empty ISO transactions, incomplete-transaction
 recovery, hardware EP0 stall on malformed OUT, configuration/reset handling,

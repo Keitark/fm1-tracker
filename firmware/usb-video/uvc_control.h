@@ -12,6 +12,7 @@
 #define FM1_UVC_FRAME_INTERVAL_100NS 2000000u
 #define FM1_UVC_PROBE_SELECTOR 1u
 #define FM1_UVC_COMMIT_SELECTOR 2u
+#define FM1_UVC_REQUEST_ERROR_SELECTOR 2u
 
 #define FM1_UVC_SET_CUR 0x01u
 #define FM1_UVC_GET_CUR 0x81u
@@ -35,6 +36,19 @@ enum fm1_uvc_control_event {
     FM1_UVC_EVENT_STOP = 2
 };
 
+/* UVC1.0 Request Error Code Control, section 4.2.1.2. */
+enum fm1_uvc_request_error {
+    FM1_UVC_ERROR_NONE = 0,
+    FM1_UVC_ERROR_NOT_READY = 1,
+    FM1_UVC_ERROR_WRONG_STATE = 2,
+    FM1_UVC_ERROR_POWER = 3,
+    FM1_UVC_ERROR_OUT_OF_RANGE = 4,
+    FM1_UVC_ERROR_INVALID_UNIT = 5,
+    FM1_UVC_ERROR_INVALID_CONTROL = 6,
+    FM1_UVC_ERROR_INVALID_REQUEST = 7,
+    FM1_UVC_ERROR_UNKNOWN = 0xff
+};
+
 /* Decoded USB SETUP fields. No packed structure casts or native byte order. */
 typedef struct {
     uint8_t request_type, request;
@@ -53,6 +67,7 @@ typedef struct {
     uint8_t configured, committed, alt, pending_selector;
     uint8_t probe[FM1_UVC_CONTROL_BYTES];
     uint8_t commit[FM1_UVC_CONTROL_BYTES];
+    uint8_t request_error;
 } fm1_uvc_control;
 
 /* Append only this video function to the root-owned configuration descriptor.
@@ -61,7 +76,8 @@ typedef struct {
  * status interrupt endpoint, device qualifier, HS mode, or OS acceptance claim.
  * Class-specific VC total is 40 bytes; class-specific VS total is 77 bytes.
  * Definitions follow Linux include/uapi/linux/usb/video.h and pinned WL82 SDK
- * apps/common/usb/device/uvc.c. Camera controls are absent, so VC requests stall.
+ * apps/common/usb/device/uvc.c. Camera controls are absent; VC entity 0 supports
+ * only REQUEST_ERROR_CODE_CONTROL GET_CUR/GET_INFO. Other VC controls stall.
  */
 extern const uint8_t fm1_uvc_video_descriptor[FM1_UVC_VIDEO_DESCRIPTOR_BYTES];
 const uint8_t *fm1_uvc_video_descriptors(size_t *length);
@@ -74,6 +90,11 @@ size_t fm1_uvc_copy_video_descriptors(uint8_t *destination, size_t capacity);
  * EP0 OUT and pass it back; a newer SETUP/reset invalidates the old transfer.
  * Apply reply.event START/STOP to the separately owned stream. configure/reset
  * always clear alt/commit; the adapter must also reset/stop that stream.
+ * Request error follows UVC section 4.2.1.2 / TinyUSB video_device.c: GET_CUR
+ * returns the preceding error, GET_INFO reports GET-only (1); both reply with
+ * at most one byte. Successful video control dispatch clears the error, after
+ * copying it into GET_CUR's reply. SET_CUR clears only after valid complete OUT.
+ * Stale OUT callbacks and unrelated SETUP cancellation do not change errors.
  */
 void fm1_uvc_control_init(fm1_uvc_control *control);
 void fm1_uvc_control_reset(fm1_uvc_control *control);
