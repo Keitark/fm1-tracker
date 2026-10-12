@@ -5,11 +5,12 @@ import json
 from pathlib import Path
 import subprocess
 import sys
-from config import validate,ROOT
+from config import validate,ROOT,HALS
 def command(project,output,python=sys.executable):
     project=Path(project).resolve();output=Path(output).resolve()
     config=validate(json.loads((project/'forge.json').read_text(encoding='utf-8-sig')))
     args=[str(python),str(ROOT/'firmware/usb-diag/build.py'),'--controller','0','--factory-diag','--forge-clock',config['clockPreset'],'--forge-lcd',config['lcdPreset'],'--out',str(output)]
+    for name in HALS:args+=['--forge-hal-'+name,str(int(config['hal'][name]))]
     if not config['usb']['uac']:args+=['--forge-no-uac']
     if config['module']=='user':
         module=project/'user.c'

@@ -20,10 +20,12 @@ def require(condition,message):
     if not condition: raise ValueError(message)
 
 
-def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,require_boot_trace=False,require_board_power=False,require_screen_first=False,usb_only=False,usb_peripheral_tests=False,usb_nes=False,usb_mdx=False,usb_audio=False,usb_mod=False,factory_diag=False,factory_user_module=False,factory_clock='sdk-default'):
+def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,require_boot_trace=False,require_board_power=False,require_screen_first=False,usb_only=False,usb_peripheral_tests=False,usb_nes=False,usb_mdx=False,usb_audio=False,usb_mod=False,factory_diag=False,factory_user_module=False,factory_clock='sdk-default',factory_hal_access=None):
     require(not usb_audio or usb_mdx or factory_diag,'Composite audio requires an explicit MDX or factory profile')
     require(not factory_diag or (usb_only and usb_peripheral_tests and not (usb_nes or usb_mdx or usb_mod)),'Factory profile must be asset-free CDC peripheral diagnostics')
     require(not factory_user_module or factory_diag,'User module requires explicit factory profile')
+    if factory_hal_access is not None:
+        require(factory_diag and isinstance(factory_hal_access,dict) and set(factory_hal_access)=={'buttons','encoders','volume','lcd','audio'} and all(type(v) is bool for v in factory_hal_access.values()),'Invalid factory HAL access selection')
     require(not usb_nes or (usb_only and usb_peripheral_tests and rom=='smb1'),'NES CDC requires explicit SMB1 peripheral profile')
     require(not usb_mdx or (usb_only and usb_peripheral_tests and not usb_nes),'MDX requires a separate CDC peripheral profile')
     require(not usb_mod or (usb_only and usb_peripheral_tests and not usb_nes and not usb_mdx),'MOD requires a separate CDC peripheral profile')
@@ -379,6 +381,10 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
                 require(name not in symbols,'Factory contains media/player component '+name)
             for name in ('fm1_forge_usb_command','fm1_forge_render','fm1_forge_clock_prepare','fm1_peripheral_usb_audio_quiesce'):
                 require(name in symbols,'Missing factory integration '+name)
+            if factory_hal_access is not None:
+                require('fm1_forge_hal_access' in symbols and symbols['fm1_forge_hal_access'][1]==5,'Missing factory HAL access table')
+                expected=bytes(int(factory_hal_access[name]) for name in ('buttons','encoders','volume','lcd','audio'))
+                require(code_at(value('fm1_forge_hal_access'),5)==expected,'Factory HAL access table does not match selected project')
             require(factory_clock in ('sdk-default','sdk-320'),'Invalid factory clock profile')
             clock_calls=calls_to('app_task_handler','fm1_forge_clock_prepare')
             starts=calls_to('app_task_handler','task_create')
@@ -590,7 +596,7 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             'usb_bootloader_entry':usb_only and 'go_mask_usb_updata' in symbols,
             'usb_peripheral_tests':usb_peripheral_tests,
             'usb_nes':usb_nes,'usb_mod':usb_mod,'factory_diag':factory_diag,'factory_user_module':factory_user_module,
-            'factory_clock':factory_clock if factory_diag else None,'usb_audio':usb_audio,
+            'factory_clock':factory_clock if factory_diag else None,'factory_hal_access':factory_hal_access if factory_diag else None,'usb_audio':usb_audio,
             'cartridge':None if display_only or (usb_only and not usb_nes) else rom,'embedded_rom_sha256':None if display_only or (usb_only and not usb_nes) else rom_sha,'hardware_boot_verified':False,'flashable':False}
 
 

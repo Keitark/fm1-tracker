@@ -10,6 +10,8 @@ import flash_session_worker as worker
 import prepare_flash_request as producer
 import export_remote_catalog as exporter
 import remote_catalog
+sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'firmware/nes'))
+import build_stock_image as pack
 
 
 HELLO='FM1DIAG/1 FM1-FORGE/1 UBOOT=SERIAL COMMIT=BLOCKED\n'
@@ -20,6 +22,38 @@ def status(n=1,**changes):
 
 
 class FactoryTests(unittest.TestCase):
+    def test_v2_metadata_cannot_bypass_linked_hal_audit(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);base=bytes(0x100000);app=b'factory application'
+            (root/'fm1-usb-diag.app.bin').write_bytes(app);(root/'fm1-usb-diag.elf').write_bytes(b'elf')
+            manifest=dict(status='LINKED_USB_DIAGNOSTIC_UNTESTED',factory_diag=True,factory_schema=1,profile='FM1_FORGE_FACTORY_DIAG_V1',asset_free=True,external_media_required=False,peripheral_tests=True,usb_audio=True,nes_smb1=False,mdx=False,mod=False,application_sha256=worker.sha(app),source_sha256={},archive_sha256={},vendor_overlay_sources={})
+            path=root/'build-manifest.json';selection=dict.fromkeys(('buttons','encoders','volume','lcd','audio'),True)
+            rejected=[{'forge_project_schema':2},{'forge_project_schema':2,'forge_hal_access':None},{'forge_project_schema':2,'forge_hal_access':{}},{'forge_project_schema':2,'forge_hal_access':{'buttons':True}},{'forge_project_schema':2,'forge_hal_access':dict(selection,audio=1)},{'forge_project_schema':2,'forge_hal_access':dict(selection,gpio=True)},{'forge_project_schema':1,'forge_hal_access':None},{'forge_project_schema':None},{'forge_project_schema':True},{'forge_project_schema':3}]
+            for fields in rejected:
+                path.write_text(json.dumps(dict(manifest,**fields)))
+                with self.subTest(fields=fields),patch.object(pack,'build_candidate') as build,self.assertRaisesRegex(ValueError,'factory.*(schema|HAL)|schema2'):
+                    producer.prepare(root,worker.sha(base),base)
+                build.assert_not_called()
+            for fields in ({},{'forge_project_schema':1},{'forge_project_schema':2,'forge_hal_access':selection}):
+                path.write_text(json.dumps(dict(manifest,**fields)))
+                with self.subTest(fields=fields),patch.object(pack,'build_candidate',return_value=(base,{'candidate_sha256':worker.sha(base)})) as build:
+                    result=producer.prepare(root,worker.sha(base),base)
+                    self.assertEqual(result['sha256'],worker.sha(base))
+                    self.assertEqual(build.call_args.kwargs['factory_project_schema'],fields.get('forge_project_schema',1))
+                    self.assertEqual(build.call_args.kwargs['factory_hal_access'],fields.get('forge_hal_access'))
+    def test_direct_packaging_v2_requires_selection_before_elf_audit(self):
+        selection=dict.fromkeys(('buttons','encoders','volume','lcd','audio'),True)
+        for hal in (None,{},dict(selection,volume='false')):
+            with self.subTest(hal=hal),patch.object(pack,'audit') as audit,self.assertRaisesRegex(ValueError,'HAL access'):
+                pack.build_candidate(b'',b'',b'',factory_diag=True,factory_project_schema=2,factory_hal_access=hal)
+            audit.assert_not_called()
+        for version in (None,True,3):
+            with self.subTest(version=version),self.assertRaisesRegex(ValueError,'project schema'):
+                pack.build_candidate(b'',b'',b'',factory_diag=True,factory_project_schema=version,factory_hal_access=selection)
+        for version,hal in ((1,None),(2,selection)):
+            with self.subTest(version=version),patch.object(pack,'audit',side_effect=RuntimeError('reached ELF audit')) as audit,self.assertRaisesRegex(RuntimeError,'reached ELF audit'):
+                pack.build_candidate(b'',b'',b'',factory_diag=True,factory_project_schema=version,factory_hal_access=hal)
+            self.assertEqual(audit.call_args.kwargs['factory_hal_access'],hal)
     def test_fresh_baseline_profile_and_no_media_are_required(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);source=root/'user.c';source.write_text('/* source */')

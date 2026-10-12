@@ -18,11 +18,16 @@ def prepare(folder, baseline_sha256, baseline=None):
     usb_audio = manifest.get('usb_audio', False)
     if type(usb_audio) is not bool or (usb_audio and not (mdx or factory)):
         raise ValueError('Composite audio requires an explicit MDX or factory build profile')
+    sys.path.insert(0, str(ROOT / 'firmware/nes'))
+    import build_stock_image as pack
     if factory:
         if type(manifest.get('factory_user_module',False)) is not bool:
             raise ValueError('Invalid factory module profile flag')
         if manifest.get('status')!='LINKED_USB_DIAGNOSTIC_UNTESTED' or manifest.get('profile')!='FM1_FORGE_FACTORY_DIAG_V1' or type(manifest.get('factory_schema')) is not int or manifest.get('factory_schema')!=1 or manifest.get('peripheral_tests') is not True or manifest.get('asset_free') is not True or manifest.get('external_media_required') is not False or any(manifest.get(n) for n in ('nes_smb1','mod','mdx')):
             raise ValueError('Only the explicit asset-free factory diagnostic schema is accepted')
+        if 'forge_hal_access' in manifest and manifest['forge_hal_access'] is None:
+            raise ValueError('Invalid factory HAL access selections')
+        pack.validate_factory_project(manifest.get('forge_project_schema',1),manifest.get('forge_hal_access'))
         if type(baseline) is not bytes or len(baseline)!=0x100000 or hashlib.sha256(baseline).hexdigest()!=baseline_sha256:
             raise ValueError('Factory diagnostic requires the exact verified current baseline')
     elif mod:
@@ -43,12 +48,10 @@ def prepare(folder, baseline_sha256, baseline=None):
     elf = (folder / (prefix + '.elf')).read_bytes()
     if hashlib.sha256(app).hexdigest() != manifest['application_sha256']:
         raise ValueError('Stale app')
-    sys.path.insert(0, str(ROOT / 'firmware/nes'))
-    import build_stock_image as pack
     image, report = pack.build_candidate(pack.V14_BACKUP.read_bytes(), elf, app,
         require_peripherals=False, usb_only=True, usb_peripheral_tests=True,
         usb_nes=not (mdx or mod or factory), usb_mdx=mdx, usb_mod=mod,factory_diag=factory,factory_user_module=manifest.get('factory_user_module',False),
-        usb_audio=usb_audio, factory_clock=manifest.get('forge_clock','sdk-default'), rom='rom50' if mod or factory else 'smb1')
+        usb_audio=usb_audio, factory_clock=manifest.get('forge_clock','sdk-default'),factory_hal_access=manifest.get('forge_hal_access') if factory else None,factory_project_schema=manifest.get('forge_project_schema',1) if factory else 1, rom='rom50' if mod or factory else 'smb1')
     if mod or factory:
         for start,end in ((0,0x4000),(0x4040,0x4120),(0x4120+584956,0x100000)):
             if image[start:end] != baseline[start:end]:

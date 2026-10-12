@@ -26,7 +26,7 @@ class FactoryImageTests(unittest.TestCase):
             if len(fields)==4:cls.symbols[fields[3]]=(int(fields[0],16),int(fields[1],16))
     def check(self,elf=None,**flags):
         elf=elf or self.elf;app=b''.join(elf[self.sections[n][4]:self.sections[n][4]+self.sections[n][5]] for n in PARTS)
-        opts=dict(usb_only=True,usb_peripheral_tests=True,factory_diag=True,factory_user_module=self.manifest.get('factory_user_module',False),factory_clock=self.manifest.get('forge_clock','sdk-default'),usb_audio=self.manifest['usb_audio'],require_boot_trace=True,require_board_power=True)
+        opts=dict(usb_only=True,usb_peripheral_tests=True,factory_diag=True,factory_user_module=self.manifest.get('factory_user_module',False),factory_clock=self.manifest.get('forge_clock','sdk-default'),factory_hal_access=self.manifest.get('forge_hal_access'),usb_audio=self.manifest['usb_audio'],require_boot_trace=True,require_board_power=True)
         opts.update(flags);return audit(elf,app,**opts)
     def corrupt(self,symbol,delta=0):
         address=self.symbols[symbol][0]+delta
@@ -50,6 +50,14 @@ class FactoryImageTests(unittest.TestCase):
         for name in ('cartridge','song','player','upload'):self.assertNotIn(name,self.symbols)
     def test_factory_requires_own_audit_profile(self):
         with self.assertRaises(ValueError):self.check(factory_diag=False)
+    def test_project_hal_selection_matches_linked_table(self):
+        selection=self.manifest.get('forge_hal_access')
+        if selection is None:self.skipTest('Legacy candidate has no project HAL selections')
+        for name in selection:
+            wrong=dict(selection);wrong[name]=not wrong[name]
+            with self.subTest(name=name),self.assertRaisesRegex(ValueError,'HAL access table'):self.check(factory_hal_access=wrong)
+        with self.assertRaisesRegex(ValueError,'HAL access table'):self.check(self.corrupt('fm1_forge_hal_access'))
+        with self.assertRaisesRegex(ValueError,'HAL access selection'):self.check(factory_hal_access=dict(selection,audio=1))
     def test_task_affinity_is_pinned(self):
         with self.assertRaisesRegex(ValueError,'task registration'):self.check(self.corrupt('task_info_table',4*20))
     def test_usb_descriptor_is_pinned(self):

@@ -10,6 +10,25 @@
 #define FM1_FORGE_TONE_LIMIT 88200u
 #define FM1_FORGE_TONE_PEAK 131072
 #define FM1_FORGE_NO_NOTE 255u
+/* Select user access; fixed diagnostic/recovery drivers always remain active. */
+#ifndef FM1_FORGE_HAL_BUTTONS
+#define FM1_FORGE_HAL_BUTTONS 1
+#endif
+#ifndef FM1_FORGE_HAL_ENCODERS
+#define FM1_FORGE_HAL_ENCODERS 1
+#endif
+#ifndef FM1_FORGE_HAL_VOLUME
+#define FM1_FORGE_HAL_VOLUME 1
+#endif
+#ifndef FM1_FORGE_HAL_LCD
+#define FM1_FORGE_HAL_LCD 1
+#endif
+#ifndef FM1_FORGE_HAL_AUDIO
+#define FM1_FORGE_HAL_AUDIO 1
+#endif
+#if (FM1_FORGE_HAL_BUTTONS != 0 && FM1_FORGE_HAL_BUTTONS != 1) || (FM1_FORGE_HAL_ENCODERS != 0 && FM1_FORGE_HAL_ENCODERS != 1) || (FM1_FORGE_HAL_VOLUME != 0 && FM1_FORGE_HAL_VOLUME != 1) || (FM1_FORGE_HAL_LCD != 0 && FM1_FORGE_HAL_LCD != 1) || (FM1_FORGE_HAL_AUDIO != 0 && FM1_FORGE_HAL_AUDIO != 1)
+#error Forge HAL access selections must be zero or one
+#endif
 typedef struct {
     uint64_t keys,seen;
     int32_t encoder[7];

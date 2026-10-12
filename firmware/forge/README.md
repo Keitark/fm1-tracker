@@ -74,10 +74,13 @@ builder arguments without execution. Direct diagnostic build:
 python firmware/usb-diag/build.py --controller 0 --factory-diag --out firmware/usb-diag/build/my-forge-candidate
 ```
 
-`config.schema.json` / `config.py` define schemaVersion1. Required config:
+`config.schema.json` / `config.py` define project schemaVersion2. Module ABI1 and
+the factory transfer/profile identity remain unchanged. Strict legacy version1
+projects are accepted and normalized to version2 with all five user HALs enabled;
+unknown fields and nonboolean selections are rejected. New/exported config:
 
 ```json
-{"schemaVersion":1,"project":{"slug":"first-synth","displayName":"First Synth"},"profile":"forge-diag","clockPreset":"sdk-default","lcdPreset":"stock-dma","module":"diagnostics","usb":{"cdc":true,"uac":true,"uboot":true}}
+{"schemaVersion":2,"project":{"slug":"first-synth","displayName":"First Synth"},"profile":"forge-diag","clockPreset":"sdk-default","lcdPreset":"stock-dma","module":"diagnostics","usb":{"cdc":true,"uac":true,"uboot":true},"hal":{"buttons":true,"encoders":true,"volume":true,"lcd":true,"audio":true}}
 ```
 
 USB CDC and UBOOT are fixed. `uac=false` compiles a CDC-only profile; true provides
@@ -85,6 +88,33 @@ USB CDC and UBOOT are fixed. `uac=false` compiles a CDC-only profile; true provi
 bounded resampling to the44.1kHz DAC. Capture is generated digital audio, not a
 claimed analog microphone input. Opening/changing DTR on CDC does not stop the
 persistent diagnostics. `FORGE STOP` is an explicit full shutdown before UBOOT.
+
+The Forge panel's USB, HAL, User and Tweaks areas configure this same document.
+All HALs default enabled. HAL selections govern **user-module access**, keeping
+fixed diagnostics, recovery, the shared scanner and physical master volume active:
+
+| Disabled HAL | User-module behavior |
+|---|---|
+| `buttons` | Pressed/seen bits are zero and last-key/note is255. |
+| `encoders` | All seven counts, invalid counts and seen bits are zero. |
+| `volume` | Volume telemetry is zero/invalid; PB6 still controls final speaker gain. |
+| `lcd` | User render callback is skipped; fixed dashboard renders sanitized inputs. |
+| `audio` | User audio callback is skipped and its PCM is silent before optional UAC mixing and master gain. |
+
+Update, user-render frames and `fm1_forge_hal_snapshot()` share one input sanitizer.
+`module=diagnostics` keeps the complete diagnostic inputs/screen/tones regardless
+of these user selections. UAC playback/capture remains a separate USB selection;
+disabling user audio does not disable fixed USB audio transport or bypass volume.
+CDC and the UBOOT recovery helper are enabled by default and required. Removing
+a user HAL does not remove its fixed driver or imply a CPU/FPS improvement.
+Native C modules are trusted code, so this is an API contract, not a sandbox.
+
+The real builder receives `--forge-hal-buttons`, `--forge-hal-encoders`,
+`--forge-hal-volume`, `--forge-hal-lcd` and `--forge-hal-audio`, each0 or1, in
+that order. It emits `FM1_FORGE_HAL_*` defines, records `forge_hal_access` in the
+manifest and pins the five-byte selection table in the linked ELF audit. Packaging
+checks that exact table against the manifest; legacy factory manifests remain
+accepted without changing the protected writer's application-only scope.
 
 ## LCD and clock presets
 
@@ -164,6 +194,11 @@ sdk320 exact-readback rejection, retained CDC diagnostics on DTR changes,
 IIS→ADC→ALINK→LCD order, custom-module callbacks/output clipping, CDC-only
 and composite profiles, scanner-error recovery with retained coverage,
 clock calls blocked during DMA, full STOP teardown and reported quiescence.
+Each disabled HAL and the all-disabled combination exercise the actual `target.c`
+API, update/render input filtering, callback suppression, continuing UAC and ADC
+master gain. A diagnostic profile with all user access flags off retains complete
+diagnostics. Configuration tests cover strict version2, version1 migration and
+deterministic translation of every selection to the real target builder.
 After exact write/full readback/one reset, verify CDC identity, advancing counters,
 zero faults and UAC enumeration. Physical LCD/41controls/7encoders/volume sweep,
 audible tones, playback/capture quality and long-run timing remain bench checks.
