@@ -117,6 +117,9 @@ class WindowsBackend:
     def install_catalog(self, bundle):
         return self.packages.install(bundle)
 
+    def install_library_set(self, name, bundles):
+        return self.packages.install_set(name, bundles)
+
     def execute(self, operation, request=None, loader_state=None, catalog_id=None, entry_method=None):
         if operation == 'plan_app':
             if request is not None or loader_state is not None or entry_method is not None:
