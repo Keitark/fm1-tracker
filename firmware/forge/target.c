@@ -14,6 +14,7 @@
 #include "asm/wdt.h"
 #endif
 #include "forge_target.h"
+#include "benchmark.h"
 #include "peripherals.h"
 #include "peripheral_logic.h"
 #include "fm1_wl82_keyscan.h"
@@ -42,6 +43,9 @@ static fm1_forge_controls controls;
 static fm1_forge_voice voice;
 static fm1_audio_startup envelope;
 static fm1_forge_frame published;
+/* The task owns benchmark; USB only queues requests and reads its snapshot. */
+static fm1_forge_benchmark benchmark,benchmark_published;
+static unsigned benchmark_request;
 static unsigned available,running,pending,quiescent,scan_enabled,audio_enabled;
 static int scan_timer;
 static unsigned scan_ticks,encoder_sequence,scan_irq_registered,audio_opened;
@@ -53,9 +57,12 @@ static uint8_t strip[8u*FM1_LCD_WIRE_ROW_BYTES];
 static unsigned take(spinlock_t *l){unsigned f;local_irq_save(f);arch_spin_lock(l);return f;}
 static void release(spinlock_t *l,unsigned f){arch_spin_unlock(l);local_irq_restore(f);}
 static uint32_t now_us(void *u){(void)u;return timer_get_ms()*1000u;}
-/* Opt-in preset is applied ONCE before either USB or DMA starts. SDK source
- * declares320M, HSB<=160M, SFC/LSB<=80M. No396M overclock table is enabled.
- * This is source-guarded experimental selection, not bench qualification. */
+extern unsigned long jiffies_half_msec(void);
+static uint32_t benchmark_clock(void *u){(void)u;return (uint32_t)jiffies_half_msec();}
+/* SDK-default preserves the bootloader's clocks, including its observed
+ * 360M/180M/60M/90M tuple. It does not select an application-table preset.
+ * The opt-in320M application preset is applied ONCE before USB or DMA starts
+ * and retains HSB<=160M, SFC/LSB<=80M. Neither path is bench qualification. */
 __attribute__((noinline,used)) int fm1_forge_clock_prepare(void){
     int hsb,sfc;
     if(available || running || scan_timer || audio_opened || audio_enabled)return -83;
@@ -67,7 +74,11 @@ __attribute__((noinline,used)) int fm1_forge_clock_prepare(void){
     if(sys_hz!=FM1_FORGE_BOOT_CLOCK_HZ)clock_error=-81;
 #endif
     hsb=clk_get("hsb");sfc=clk_get("sfc");
-    if(sys_hz<24000000u || sys_hz>480000000u || !lsb_hz || lsb_hz>80000000u || hsb<=0 || hsb>160000000 || sfc<=0 || sfc>80000000)clock_error=-82;
+    if(sys_hz<24000000u || sys_hz>480000000u || !lsb_hz || lsb_hz>80000000u ||
+       hsb<=0 || (uint32_t)hsb>sys_hz || sfc<=0 || sfc>hsb || lsb_hz>(uint32_t)hsb)clock_error=-82;
+#if FM1_FORGE_BOOT_CLOCK_HZ
+    if(hsb>160000000 || sfc>80000000)clock_error=-82;
+#endif
     return clock_error;
 }
 static void scan_tick(void *u){unsigned f=take(&input_lock);(void)u;
@@ -121,9 +132,10 @@ __attribute__((noinline,used)) void fm1_peripheral_usb_audio_quiesce(void){unsig
     bit_clr_ie(IRQ_ALNK_IDX,0);bit_clr_ie(IRQ_SPI2_IDX,0);
     f=take(&audio_lock);audio_enabled=0;fm1_forge_voice_init(&voice);release(&audio_lock,f);
     f=take(&input_lock);scan_enabled=0;fm1_volume_stop(&volume);release(&input_lock,f);
+    f=take(&control_lock);if(benchmark_published.state==FM1_FORGE_BENCH_RUNNING && benchmark_request<2)benchmark_request=benchmark_request==1?3:2;release(&control_lock,f);
 }
 void fm1_peripheral_usb_audio_stop(void){fm1_peripheral_usb_audio_quiesce();}
-static void shutdown(void){unsigned f;
+static void shutdown(void){unsigned f,request;uint32_t ticks;
     if(scan_timer){sys_usec_timer_del(scan_timer);scan_timer=0;}
     fm1_peripheral_usb_audio_quiesce();
     f=take(&input_lock);if(scanner.running)fm1_wl82_keyscan_stop(&scanner);release(&input_lock,f);
@@ -136,7 +148,10 @@ static void shutdown(void){unsigned f;
 #ifdef FM1_FORGE_USER_MODULE
     if(fm1_forge_user_module.shutdown)fm1_forge_user_module.shutdown();
 #endif
-    f=take(&control_lock);running=pending=0;quiescent=1;published.input.keys=0;release(&control_lock,f);
+    f=take(&control_lock);request=benchmark_request;release(&control_lock,f);
+    ticks=benchmark_clock(0);if(request==1 || request==3)(void)fm1_forge_bench_start(&benchmark,ticks);
+    fm1_forge_bench_cancel(&benchmark,ticks);
+    f=take(&control_lock);running=pending=0;quiescent=1;published.input.keys=0;benchmark_request=0;benchmark_published=benchmark;release(&control_lock,f);
 }
 void fm1_peripheral_cancel(void){unsigned f=take(&control_lock);if(!quiescent)pending=1;release(&control_lock,f);}
 void fm1_peripheral_session_cancel(void){} /* DTR changes do not stop hardware. */
@@ -147,9 +162,22 @@ __attribute__((noinline,used)) void fm1_display_snapshot(unsigned phase,const ui
 static void snapshot(fm1_forge_frame *out){unsigned f=take(&control_lock);*out=published;release(&control_lock,f);}
 int fm1_forge_usb_command(const char *s,uint32_t now,fm1_forge_reply reply,void *ctx){
     fm1_forge_frame p;unsigned a,r,q,f;char line[224];(void)now;
-    if(strcmp(s,"FORGE STATUS") && strcmp(s,"FORGE INPUT") && strcmp(s,"FORGE AUDIO") && strcmp(s,"FORGE LCD") && strcmp(s,"FORGE CLOCK") && strcmp(s,"FORGE MODULE") && strcmp(s,"FORGE STOP") && strcmp(s,"HAL GET") && strcmp(s,"FORGE HELP"))return 0;
+    if(strcmp(s,"FORGE STATUS") && strcmp(s,"FORGE INPUT") && strcmp(s,"FORGE AUDIO") && strcmp(s,"FORGE LCD") && strcmp(s,"FORGE CLOCK") && strcmp(s,"FORGE MODULE") && strcmp(s,"FORGE STOP") && strcmp(s,"HAL GET") && strcmp(s,"FORGE HELP") && strcmp(s,"FORGE BENCH") && strcmp(s,"FORGE BENCH STATUS") && strcmp(s,"FORGE BENCH START") && strcmp(s,"FORGE BENCH CANCEL"))return 0;
     if(!strcmp(s,"FORGE STOP")){fm1_peripheral_cancel();reply(ctx,"OK FORGE STOP REQUESTED\n");return 1;}
-    if(!strcmp(s,"FORGE HELP")){reply(ctx,"FORGE STATUS INPUT AUDIO LCD CLOCK MODULE STOP; HAL GET\n");return 1;}
+    if(!strcmp(s,"FORGE HELP")){reply(ctx,"FORGE STATUS INPUT AUDIO LCD CLOCK MODULE STOP; BENCH START|STATUS|CANCEL; HAL GET\n");return 1;}
+    if(!strncmp(s,"FORGE BENCH",11)){
+        fm1_forge_benchmark b;unsigned request;int rc=0;
+        f=take(&control_lock);
+        if(!strcmp(s,"FORGE BENCH START")){
+            if(benchmark_request || benchmark_published.state==FM1_FORGE_BENCH_RUNNING)rc=-1;
+            else if(!running || pending || published.fault)rc=-2;
+            else {benchmark_request=1;fm1_forge_bench_init(&benchmark_published);benchmark_published.state=FM1_FORGE_BENCH_RUNNING;}
+        }else if(!strcmp(s,"FORGE BENCH CANCEL") && benchmark_published.state==FM1_FORGE_BENCH_RUNNING && benchmark_request<2)benchmark_request=benchmark_request==1?3:2;
+        b=benchmark_published;request=benchmark_request;release(&control_lock,f);
+        if(rc){reply(ctx,rc==-1?"ERROR FORGE BENCH busy\n":"ERROR FORGE BENCH unavailable\n");return 1;}
+        snprintf(line,sizeof(line),"FORGE BENCH state=%s done=%lu total=%lu active_ticks=%lu wall_ticks=%lu batches=%lu tick_us=500 queued=%u cancel=%u fault=%d\n",request==1?"queued":fm1_forge_bench_state_name(b.state),(unsigned long)b.done,(unsigned long)FM1_FORGE_BENCH_TOTAL,(unsigned long)b.active_ticks,(unsigned long)b.wall_ticks,(unsigned long)b.batches,request==1,request>=2,b.fault);reply(ctx,line);
+        snprintf(line,sizeof(line),"FORGE BENCH x=%08lx acc=%08lx checksum=%08lx expected=%08lx\n",(unsigned long)b.x,(unsigned long)b.acc,(unsigned long)b.checksum,(unsigned long)FM1_FORGE_BENCH_EXPECTED_CHECKSUM);reply(ctx,line);return 1;
+    }
     snapshot(&p);f=take(&control_lock);a=available;r=running;q=pending;release(&control_lock,f);
     if(!strcmp(s,"FORGE INPUT") || !strcmp(s,"HAL GET")){
         unsigned i;snprintf(line,sizeof(line),"FORGE INPUT keys=%08lx%08lx seen=%08lx%08lx scans=%lu errors=%lu volume=%u gain=%u valid=%u min=%u max=%u adc_samples=%lu adc_errors=%lu\n",
@@ -163,7 +191,7 @@ int fm1_forge_usb_command(const char *s,uint32_t now,fm1_forge_reply reply,void 
 #endif
     }else if(!strcmp(s,"FORGE LCD")){snprintf(line,sizeof(line),"FORGE LCD completed=%lu submitted=%lu busy=%lu errors=%lu fps10=%u format=%s divider=%u fault=%d\n",
         (unsigned long)p.lcd_completed,(unsigned long)p.ui_frames,(unsigned long)p.lcd_busy,(unsigned long)p.lcd_errors,p.fps_tenths,FM1_LCD_FORMAT_NAME,FM1_LCD_STREAM_BAUD,lcd_error);reply(ctx,line);
-    }else if(!strcmp(s,"FORGE CLOCK")){snprintf(line,sizeof(line),"FORGE CLOCK preset=%s sys=%lu lsb=%lu fault=%d dynamic=blocked qualified=0\n",FM1_FORGE_BOOT_CLOCK_HZ?"sdk-320":"sdk-default",(unsigned long)sys_hz,(unsigned long)lsb_hz,clock_error);reply(ctx,line);
+    }else if(!strcmp(s,"FORGE CLOCK")){int sys=clk_get("sys"),hsb=clk_get("hsb"),lsb=clk_get("lsb"),sfc=clk_get("sfc");snprintf(line,sizeof(line),"FORGE CLOCK preset=%s sys=%ld hsb=%ld lsb=%ld sfc=%ld fault=%d dynamic=blocked qualified=0\n",FM1_FORGE_BOOT_CLOCK_HZ?"sdk-320":"sdk-default",(long)sys,(long)hsb,(long)lsb,(long)sfc,clock_error);reply(ctx,line);
     }else if(!strcmp(s,"FORGE MODULE")){snprintf(line,sizeof(line),"FORGE MODULE abi=1 user=%u name=%s system=usb,uboot,input,lcd,audio hal=%u,%u,%u,%u,%u\n",p.module_user,p.module_user?fm1_forge_user_module.name:"diagnostics",FM1_FORGE_HAL_BUTTONS,FM1_FORGE_HAL_ENCODERS,FM1_FORGE_HAL_VOLUME,FM1_FORGE_HAL_LCD,FM1_FORGE_HAL_AUDIO);reply(ctx,line);
     }else{snprintf(line,sizeof(line),"FORGE STATUS ready=%u running=%u pending=%u frames=%lu audio_frames=%lu scans=%lu keys=%08lx%08lx lcd=%d fault=%d input_errors=%lu adc_errors=%lu\n",a,r,q,
         (unsigned long)p.lcd_completed,(unsigned long)p.audio_frames,(unsigned long)p.input.scans,(unsigned long)(p.input.keys>>32),(unsigned long)p.input.keys,lcd_error,p.fault,(unsigned long)p.input.input_errors,(unsigned long)p.input.volume_errors);reply(ctx,line);}
@@ -236,8 +264,18 @@ __attribute__((noinline,used)) static void fm1_forge_task(void *unused){
 #endif
                 rc=fm1_display_async_wire_rows(y,8,strip,sizeof(strip));if(rc<0)lcd_error=rc;else y+=8;built++;}}}
         frame.fault=(int16_t)(clock_error?clock_error:audio_error?audio_error:key_error?key_error:lcd_error);
+        {unsigned request;uint32_t ticks;
+            f=take(&control_lock);request=benchmark_request;benchmark_request=0;release(&control_lock,f);
+            ticks=benchmark_clock(0);
+            if(request==1 || request==3)(void)fm1_forge_bench_start(&benchmark,ticks);
+            if(request>=2)fm1_forge_bench_cancel(&benchmark,ticks);
+            if(frame.fault)fm1_forge_bench_abort(&benchmark,ticks,frame.fault);
+            /* No spinlock/IRQ mask is held across this bounded foreground work. */
+            fm1_forge_bench_step(&benchmark,benchmark_clock,0);
+            f=take(&control_lock);benchmark_published=benchmark;release(&control_lock,f);
+        }
         f=take(&control_lock);published=frame;release(&control_lock,f);wdt_clear();os_time_dly(1);
     }
 }
-int fm1_peripheral_start_task(void){int rc;available=running=pending=quiescent=0;rc=task_create(fm1_forge_task,0,"#C0peripheral");
+int fm1_peripheral_start_task(void){int rc;available=running=pending=quiescent=0;benchmark_request=0;fm1_forge_bench_init(&benchmark);benchmark_published=benchmark;rc=task_create(fm1_forge_task,0,"#C0peripheral");
     if(rc){quiescent=1;return rc;}available=1;return 0;}

@@ -130,8 +130,16 @@ the maintained LCD driver, including its pending-frame handoff correction.
 `sdk-default` preserves boot clocks without writes and reports their actual values.
 `sdk-320` is experimental opt-in and invokes the pinned SDK application API
 `system_clock_set(320000000)` ONCE before
-USB/DAC start, checks exact320MHz report and HSB<=160MHz / SFC,LSB<=80MHz. It is
-not described as faster than the default; stock/SDK boot may report480MHz.
+USB/DAC start, checks exact320MHz report and HSB<=160MHz / SFC,LSB<=80MHz.
+The default guard validates positive, ordered clock reports and LSB<=80MHz;
+it accepts the preserved 360/180/60/90 MHz boot tuple without calling a setter.
+The tighter application-preset HSB/SFC limits apply to the opt-in 320 MHz path.
+The 2026-10-12 physical bench reported 360 MHz by default and 320 MHz after opt-in,
+with three correct-checksum runs at each clock and duplex UAC during the final
+run. 320 MHz took longer in this workload. This bounded test does not qualify the
+preset for long-term use; `qualified=0` remains. See
+[the clock bench report](../../docs/FM1_FORGE_CLOCK_BENCH_20261012.md) for exact
+timings, USB/peripheral counters, written-image hashes and restoration evidence.
 Changing CPU clocks during DMA or through serial/user callbacks is blocked.
 The SDK320 table selects a53MHz LSB clock, so project validation rejects
 `sdk-320` combined with either fast LCD preset; select `stock-dma` for SDK320.
@@ -175,6 +183,55 @@ scanner/audio/LCD/UAC shutdown; poll `FORGE STATUS` until running0/pending0.
 The existing `UBOOT` then `UBOOT CONFIRM` five-second confirmation performs serial
 entry to the existing Jieli downloader. Actual flash writes remain the protected
 external UBOOT writer; CDC `COMMIT` stays blocked. USB Audio Class is not a writer.
+
+## Foreground benchmark protocol
+
+`FORGE BENCH START` queues an asset-free deterministic integer workload; it does
+not run inside the USB command handler or an IRQ. `FORGE BENCH STATUS` (or
+`FORGE BENCH`) reports state/progress, and `FORGE BENCH CANCEL` queues cancellation.
+Duplicate starts reject `busy`; stopped or faulted diagnostics reject `unavailable`.
+Completed/cancelled/fault results remain queryable until the next accepted start.
+`FORGE STOP`, peripheral shutdown and detected clock/audio/input/LCD faults cancel
+or abort the workload. The default state is idle and adds no compute workload.
+
+The workload starts with x=`12345678`, acc=checksum=0. Each uint32 iteration uses
+xorshift13/17/5, accumulates `(x & 0xffff) * (x >> 16)`, then updates checksum with
+`rotl(checksum,5) ^ x ^ acc`. All arithmetic wraps modulo2^32. The1,048,576-iteration
+oracle is x=`c99ffa61`, acc=`a74a62dd`, checksum=`62ce71ca`; the full16,777,216-iteration
+result must be x=`db418d78`, acc=`d1593f35`, checksum=`219bcd44`. A full-run mismatch
+reports fault−84. Each foreground turn executes at most65,536 iterations and
+checks the500µs SDK timer every1,024 iterations, yielding when the measured slice
+reaches8ms; that time bound can overrun by one1,024-iteration chunk. No spinlock or
+IRQ mask is held across the workload, so USB, scanner, LCD DMA and DAC IRQs continue.
+
+`active_ticks` sums measured work intervals; `wall_ticks` includes foreground
+yield/scheduling gaps. Both use `jiffies_half_msec()` with tick_us=500 and wrap-safe
+uint32 subtraction. Active time includes IRQ preemption and timer-call overhead,
+and has up to500µs quantization uncertainty per batch. Zero active time cannot
+produce a throughput estimate. These counters measure this workload under the
+running peripheral load, not an independently measured PLL frequency or pure CPU
+time. `FORGE CLOCK` reads sys/hsb/lsb/sfc freshly and retains `qualified=0`.
+Physical comparison requires identical module/LCD/UAC configuration, exact
+firmware write/readback, correct checksums, and advancing peripheral counters
+without new faults for both SDK-default and SDK320. The bounded 2026-10-12 bench
+met those conditions; source/host passes alone do not qualify 320 MHz.
+
+The host runner operates only on an already-running Forge candidate:
+
+```powershell
+python tools/jieli-wl82/benchmark_forge_clock.py --port COM4 --out tmp/forge-clock-repeat --runs 3 --uac
+```
+
+The output directory must be new. Automatic port selection requires exactly one
+VID3654/PID5155 CDC endpoint. The runner checks the Forge HELLO identity, records
+raw serial plus JSON telemetry, validates every full workload checksum, and uses
+bounded polling. It never flashes, resets, enters UBOOT, changes clocks or stops
+peripherals. On failure it cancels only its still-active benchmark. Optional
+`--uac` exercises the exact FM1 FW Factory WASAPI stereo input/output at 48 kHz
+during the final run, after two seconds of warm-up, using precomputed 0.005-peak
+tones and preallocated capture. Device FIFO/transport counters and host callback
+flags are reported separately; silent digital capture without a key tone is not
+an audible-output test. Streams and the sole serial handle are always closed.
 
 Host validation:
 

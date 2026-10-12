@@ -14,9 +14,10 @@ static irq_fn irqs[40];
 static void (*timer_cb)(void *);
 static void (*dac_cb)(void *,u8 *,int,u8);
 static unsigned ms,turn,order,closes,lcd_stops,uac_stops,clock_writes,wrong_readback,submitted,completed,scan_starts,injected;
-static int current_clock=480000000;
+static int current_clock=360000000,current_hsb=180000000,current_lsb=60000000,current_sfc=90000000;
 static char replies[4096];
 static unsigned diagnostic_renders,usb_audio_blocks;
+unsigned test_irq_disabled;
 static fm1_forge_frame diagnostic_frame;
 #ifdef FM1_FORGE_USER_MODULE
 extern unsigned test_module_inits,test_module_updates,test_module_renders,test_module_audio,test_module_stops;
@@ -47,9 +48,10 @@ volatile int fm1_display_error;
 static void reply(void *u,const char *line){(void)u;CHECK(strlen(replies)+strlen(line)<sizeof(replies));strcat(replies,line);}
 void arch_spin_lock(spinlock_t *l){CHECK(!l->held);l->held=1;}
 void arch_spin_unlock(spinlock_t *l){CHECK(l->held);l->held=0;}
-int clk_get(const char *name){if(!strcmp(name,"sys"))return current_clock;if(!strcmp(name,"lsb"))return current_clock==320000000?53000000:60000000;if(!strcmp(name,"hsb"))return 160000000;if(!strcmp(name,"sfc"))return 80000000;return -1;}
-int system_clock_set(uint32_t hz){CHECK(hz==320000000u && !audio_enabled && !timer_cb && !dac_cb);clock_writes++;if(current_clock==(int)hz)return -22;if(!wrong_readback)current_clock=(int)hz;return 0;}
+int clk_get(const char *name){if(!strcmp(name,"sys"))return current_clock;if(!strcmp(name,"lsb"))return current_lsb;if(!strcmp(name,"hsb"))return current_hsb;if(!strcmp(name,"sfc"))return current_sfc;return -1;}
+int system_clock_set(uint32_t hz){CHECK(hz==320000000u && !audio_enabled && !timer_cb && !dac_cb);clock_writes++;if(current_clock==(int)hz)return -22;if(!wrong_readback){current_clock=(int)hz;current_hsb=160000000;current_lsb=53000000;current_sfc=80000000;}return 0;}
 uint32_t timer_get_ms(void){return ms;}
+unsigned long jiffies_half_msec(void){CHECK(!test_irq_disabled && !input_lock.held && !audio_lock.held && !control_lock.held);return (uint32_t)(ms*2u);}
 int sys_usec_timer_add(void *u,void (*cb)(void *),unsigned period,unsigned once,unsigned cpu){(void)u;CHECK(order==3 && period==1000 && once==1 && !cpu);order=4;timer_cb=cb;return 1;}
 void sys_usec_timer_del(int id){CHECK(id==1);timer_cb=0;}
 int task_create(task_fn cb,void *u,const char *name){(void)u;CHECK(!strcmp(name,"#C0peripheral"));task=cb;return 0;}
@@ -93,14 +95,28 @@ void fm1_usb_audio_status(char *out,size_t n){snprintf(out,n,"USB AUDIO rate=480
 void fm1_usb_audio_transport_status(char *out,size_t n){snprintf(out,n,"USB TRANSPORT submitted=1\n");}
 #endif
 void os_time_dly(int ticks){
-    if(quiescent){CHECK(!running && !pending && !scan_enabled && !audio_enabled && !timer_cb && !dac_cb && !scanner.running && !volume.running);CHECK(closes==1 && lcd_stops==1);longjmp(end,1);}
+    if(quiescent){CHECK(!running && !pending && !scan_enabled && !audio_enabled && !timer_cb && !dac_cb && !scanner.running && !volume.running);CHECK(closes==1 && lcd_stops==1);CHECK(benchmark_published.state==FM1_FORGE_BENCH_CANCELLED && !benchmark_request);longjmp(end,1);}
     CHECK(ticks==1);ms+=10;turn++;
     if(timer_cb)timer_cb(0);if(irqs[37] && scan_enabled)irqs[37]();if(irqs[11] && audio_enabled)irqs[11]();
+    if(turn==7){replies[0]=0;CHECK(fm1_forge_usb_command("FORGE BENCH",ms,reply,0));CHECK(strstr(replies,"state=idle done=0"));
+        CHECK(fm1_forge_usb_command("FORGE BENCH START",ms,reply,0));CHECK(benchmark_request==1);
+        CHECK(fm1_forge_usb_command("FORGE BENCH CANCEL",ms,reply,0));CHECK(benchmark_request==3 && !benchmark.done);}
     if(turn==8){fm1_forge_input input;fm1_forge_hal_snapshot(&input);check_user_input(&input);CHECK(volume.valid && volume.target==62 && envelope.target_q7==62);
         fm1_peripheral_session_cancel();CHECK(running && !pending && audio_enabled);
         {unsigned writes=clock_writes;CHECK(fm1_forge_clock_prepare()==-83);CHECK(clock_writes==writes);}
         CHECK(fm1_forge_usb_command("FORGE STATUS",ms,reply,0));CHECK(strstr(replies,"ready=1 running=1 pending=0"));CHECK(!pending);
-        CHECK(fm1_forge_usb_command("FORGE INPUT",ms,reply,0));CHECK(strstr(replies,"FORGE KNOB id=6"));}
+        CHECK(fm1_forge_usb_command("FORGE INPUT",ms,reply,0));CHECK(strstr(replies,"FORGE KNOB id=6"));
+        replies[0]=0;CHECK(fm1_forge_usb_command("FORGE BENCH",ms,reply,0));CHECK(strstr(replies,"state=cancelled done=0"));
+        replies[0]=0;CHECK(fm1_forge_usb_command("FORGE BENCH START",ms,reply,0));CHECK(strstr(replies,"state=queued done=0") && benchmark_request==1 && !benchmark.done);
+        CHECK(fm1_forge_usb_command("FORGE BENCH START",ms,reply,0));CHECK(strstr(replies,"ERROR FORGE BENCH busy"));}
+    if(turn==10){CHECK(benchmark_published.state==FM1_FORGE_BENCH_RUNNING && benchmark.done==2u*FM1_FORGE_BENCH_SLICE);}
+    if(turn==11){CHECK(benchmark_published.state==FM1_FORGE_BENCH_FAULT && benchmark_published.fault==-7);
+        replies[0]=0;CHECK(fm1_forge_usb_command("FORGE BENCH STATUS",ms,reply,0));CHECK(strstr(replies,"state=fault") && strstr(replies,"fault=-7"));
+        CHECK(fm1_forge_usb_command("FORGE BENCH START",ms,reply,0));CHECK(strstr(replies,"ERROR FORGE BENCH unavailable"));}
+    if(turn==16){CHECK(!published.fault);replies[0]=0;CHECK(fm1_forge_usb_command("FORGE BENCH START",ms,reply,0));CHECK(strstr(replies,"state=queued"));}
+    if(turn==20){CHECK(benchmark_published.state==FM1_FORGE_BENCH_RUNNING);replies[0]=0;CHECK(fm1_forge_usb_command("FORGE BENCH CANCEL",ms,reply,0));CHECK(strstr(replies,"cancel=1"));}
+    if(turn==21){CHECK(benchmark_published.state==FM1_FORGE_BENCH_CANCELLED);}
+    if(turn==22){CHECK(fm1_forge_usb_command("FORGE BENCH START",ms,reply,0));}
     if(turn==45){CHECK(completed>0 && audio_frames>0 && controls.input.scans>0);CHECK(!published.fault);CHECK(scan_starts==2 && controls.input.input_errors==1 && controls.input.seen==(UINT64_C(1)<<14));
         {fm1_forge_input input;fm1_forge_hal_snapshot(&input);check_user_input(&input);}
 #ifdef FM1_FORGE_USER_MODULE
@@ -113,18 +129,52 @@ void os_time_dly(int ticks){
 #else
         CHECK(diagnostic_renders>0);check_user_input(&diagnostic_frame.input);
 #endif
+    }
+    if(turn==280){CHECK(benchmark_published.state==FM1_FORGE_BENCH_COMPLETE && benchmark_published.done==FM1_FORGE_BENCH_TOTAL && benchmark_published.batches==256 && benchmark_published.checksum==FM1_FORGE_BENCH_EXPECTED_CHECKSUM);
+        replies[0]=0;CHECK(fm1_forge_usb_command("FORGE BENCH STATUS",ms,reply,0));CHECK(strstr(replies,"state=complete") && strstr(replies,"checksum=219bcd44"));
+        {int previous=current_clock,previous_hsb=current_hsb,previous_lsb=current_lsb,previous_sfc=current_sfc;current_clock=240000000;current_hsb=160000000;current_lsb=60000000;current_sfc=80000000;CHECK(fm1_forge_usb_command("FORGE CLOCK",ms,reply,0));CHECK(strstr(replies,"sys=240000000 hsb=160000000 lsb=60000000 sfc=80000000"));current_clock=previous;current_hsb=previous_hsb;current_lsb=previous_lsb;current_sfc=previous_sfc;}
+        CHECK(fm1_forge_usb_command("FORGE BENCH START",ms,reply,0));}
+#if FM1_FORGE_BOOT_CLOCK_HZ
+    if(turn==282){CHECK(benchmark_published.state==FM1_FORGE_BENCH_RUNNING);CHECK(fm1_forge_usb_command("FORGE BENCH CANCEL",ms,reply,0));}
+#endif
+    if(turn==283){
+#if FM1_FORGE_BOOT_CLOCK_HZ
+        CHECK(benchmark_published.state==FM1_FORGE_BENCH_CANCELLED);CHECK(fm1_forge_usb_command("FORGE BENCH START",ms,reply,0));CHECK(benchmark_request==1);
+#else
+        CHECK(benchmark_published.state==FM1_FORGE_BENCH_RUNNING);
+#endif
         CHECK(fm1_forge_usb_command("FORGE STOP",ms,reply,0));CHECK(pending);}
-    CHECK(turn<48);
+    CHECK(turn<286);
 }
-int main(void){
+/* Clock preparation is exercised before any timer or DMA mock can start. */
+static void clock_fixture(int sys,int hsb,int lsb,int sfc){
+    current_clock=sys;current_hsb=hsb;current_lsb=lsb;current_sfc=sfc;
+    clock_prepared=0;clock_error=0;
+}
+static void check_clock_guards(void){
     CHECK(!fm1_forge_clock_prepare());
 #if FM1_FORGE_BOOT_CLOCK_HZ
-    CHECK(clock_writes==1 && sys_hz==320000000);CHECK(!fm1_forge_clock_prepare() && clock_writes==1);clock_prepared=0;wrong_readback=1;current_clock=240000000;CHECK(fm1_forge_clock_prepare()==-81);CHECK(clock_writes==2);wrong_readback=0;clock_error=0;current_clock=320000000;
-    clock_prepared=0;CHECK(!fm1_forge_clock_prepare() && sys_hz==320000000 && clock_writes==2);
+    CHECK(clock_writes==1 && sys_hz==320000000);CHECK(!fm1_forge_clock_prepare() && clock_writes==1);
+    clock_fixture(240000000,120000000,60000000,60000000);wrong_readback=1;
+    CHECK(fm1_forge_clock_prepare()==-81 && clock_writes==2);wrong_readback=0;
+    clock_fixture(320000000,180000000,60000000,80000000);CHECK(fm1_forge_clock_prepare()==-82 && clock_writes==2);
+    clock_fixture(320000000,160000000,60000000,90000000);CHECK(fm1_forge_clock_prepare()==-82 && clock_writes==2);
+    clock_fixture(320000000,160000000,81000000,80000000);CHECK(fm1_forge_clock_prepare()==-82 && clock_writes==2);
+    clock_fixture(320000000,160000000,53000000,80000000);CHECK(!fm1_forge_clock_prepare() && clock_writes==2);
 #else
-    CHECK(!clock_writes && sys_hz==480000000);
+    CHECK(!clock_writes && sys_hz==360000000 && current_hsb==180000000 && current_sfc==90000000);
+    CHECK(!fm1_forge_clock_prepare() && !clock_writes);
+    clock_fixture(360000000,180000000,81000000,90000000);CHECK(fm1_forge_clock_prepare()==-82 && !clock_writes);
+    clock_fixture(360000000,0,60000000,90000000);CHECK(fm1_forge_clock_prepare()==-82 && !clock_writes);
+    clock_fixture(360000000,400000000,60000000,90000000);CHECK(fm1_forge_clock_prepare()==-82 && !clock_writes);
+    clock_fixture(360000000,180000000,60000000,200000000);CHECK(fm1_forge_clock_prepare()==-82 && !clock_writes);
+    clock_fixture(360000000,180000000,60000000,90000000);CHECK(!fm1_forge_clock_prepare() && !clock_writes);
 #endif
+}
+int main(void){
+    check_clock_guards();
     CHECK(!fm1_peripheral_start_task() && task && !fm1_peripheral_idle());
+    replies[0]=0;CHECK(fm1_forge_usb_command("FORGE BENCH START",ms,reply,0));CHECK(strstr(replies,"ERROR FORGE BENCH unavailable"));replies[0]=0;
     if(!setjmp(end))task(0);CHECK(fm1_peripheral_idle());
     CHECK(fm1_forge_usb_command("FORGE STATUS",ms,reply,0));CHECK(strstr(replies,"running=0 pending=0"));
 #ifdef FM1_USB_AUDIO
@@ -138,5 +188,5 @@ int main(void){
     CHECK(!test_module_audio);
 #endif
 #endif
-    puts("Actual Forge target lifecycle,read-only CDC,persistent diagnostics,clock guards and STOP quiesce passed");return 0;
+    puts("Actual Forge target lifecycle,CDC benchmark queue and faults,clock guards and STOP quiesce passed");return 0;
 }

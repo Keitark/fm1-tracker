@@ -10,8 +10,9 @@ typedef void (*task_fn)(void *);
 #ifdef _MSC_VER
 #define __attribute__(value)
 #endif
-#define local_irq_save(f) do{f=0;}while(0)
-#define local_irq_restore(f) ((void)(f))
+extern unsigned test_irq_disabled;
+#define local_irq_save(f) do{f=test_irq_disabled;test_irq_disabled=1;}while(0)
+#define local_irq_restore(f) (test_irq_disabled=(f))
 #define IRQ_ALNK_IDX 11
 #define IRQ_SPI2_IDX 37
 #define IIS_PORTC 2
@@ -21,6 +22,7 @@ void arch_spin_unlock(spinlock_t *);
 int clk_get(const char *);
 int system_clock_set(uint32_t);
 uint32_t timer_get_ms(void);
+unsigned long jiffies_half_msec(void);
 int sys_usec_timer_add(void *,void (*)(void *),unsigned,unsigned,unsigned);
 void sys_usec_timer_del(int);
 int task_create(task_fn,void *,const char *);

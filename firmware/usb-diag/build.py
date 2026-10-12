@@ -159,7 +159,7 @@ def main():
         sources += [NES/'boot/display_test.c',NES/'src/fm1_wl82_keyscan.c',NES/'src/fm1_stock_keys.c']
     speed_sources=set()
     if a.factory_diag:
-        factory=[HERE.parent/'forge'/n for n in ('forge.c','target.c','user_module.c','render.c')]
+        factory=[HERE.parent/'forge'/n for n in ('forge.c','target.c','user_module.c','render.c','benchmark.c')]
         if a.forge_user_module:
             custom=a.forge_user_module.resolve()
             if not custom.is_file() or custom.suffix!='.c':raise ValueError('Forge user module requires an existing .c source')
