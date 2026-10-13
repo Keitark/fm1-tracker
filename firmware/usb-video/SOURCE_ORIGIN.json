@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/Keitark/fm1",
+  "commit": "fb677ea095a28fba3b4b8b8fe91cc3deeb0278d5",
+  "source_checkout": "tracker-tutorial/fm1",
+  "copied_paths": ["firmware/usb-video/uvc_stream.c", "firmware/usb-video/uvc_stream.h", "firmware/usb-video/uvc_control.c", "firmware/usb-video/uvc_control.h", "firmware/usb-video/fm1_uvc.c", "firmware/usb-video/fm1_uvc.h", "firmware/usb-video/tests", "firmware/usb-video/run_host_tests.py", "firmware/usb-video/run_adapter_tests.py"],
+  "adaptation": "Preserve existing Forge CDC and UAC numbering; append VC5/VS6 with UAC or VC2/VS3 without UAC. Use the original EP4 adapter, packet/control core and permanent capture shutdown. A separate bounded Forge frame producer replaces the tracker view producer.",
+  "reference_hardware_evidence": "ProTracker session received 60 complete 256x240 frames on Windows with stereo UAC; audio starvation was observed. Evidence belongs to that reference image and does not qualify Forge. See docs/FM1_USB_SPEED_AND_UVC.md in the source checkout.",
+  "forge_hardware_acceptance": false
+}

@@ -7,7 +7,7 @@
 #include <stddef.h>
 #ifdef FM1_LCD_ASYNC
 #include <string.h>
-#if !(defined(FM1_NES_PLAYER) || defined(FM1_MOD_PLAYER)) || !defined(FM1_LCD_STOCK_SEQUENCE)
+#if !(defined(FM1_NES_PLAYER) || defined(FM1_MOD_PLAYER) || defined(FM1_FORGE)) || !defined(FM1_LCD_STOCK_SEQUENCE)
 #error Asynchronous LCD requires NES or MOD and the qualified stock sequence
 #endif
 #endif
@@ -108,7 +108,7 @@ static void async_shutdown(void);
 #ifdef FM1_LCD_STOCK_DMA
 #ifdef FM1_DISPLAY_TEST_HOST
 static uint8_t fm1_lcd_dma_params[64];
-#if defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || (defined(FM1_MOD_PLAYER) && !defined(FM1_LCD_ASYNC))
+#if defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || defined(FM1_FORGE) || (defined(FM1_MOD_PLAYER) && !defined(FM1_LCD_ASYNC))
 static uint8_t fm1_lcd_dma_pixels[3840];
 #endif
 extern void fm1_display_test_dma_source(const uint8_t *);
@@ -116,7 +116,7 @@ extern void fm1_display_test_dma_source(const uint8_t *);
 /* Dedicated internal RAM, not flash/SDRAM/cache RAM; placement audited in ELF.
  * Kept alive through DMA completion or controller shutdown after a timeout. */
 __attribute__((aligned(64),used)) static uint8_t fm1_lcd_dma_params[64];
-#if defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || (defined(FM1_MOD_PLAYER) && !defined(FM1_LCD_ASYNC))
+#if defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || defined(FM1_FORGE) || (defined(FM1_MOD_PLAYER) && !defined(FM1_LCD_ASYNC))
 /* One eight-row strip. Startup continues to use the original 64-byte buffer. */
 __attribute__((aligned(64),used)) static uint8_t fm1_lcd_dma_pixels[3840];
 #endif
@@ -173,7 +173,7 @@ static int send(int data,const uint8_t *p,size_t size) {
         uint32_t start,polls=0;
         uint8_t *buffer=fm1_lcd_dma_params;
         size_t capacity=sizeof(fm1_lcd_dma_params);
-#if defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || (defined(FM1_MOD_PLAYER) && !defined(FM1_LCD_ASYNC))
+#if defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || defined(FM1_FORGE) || (defined(FM1_MOD_PLAYER) && !defined(FM1_LCD_ASYNC))
         if(size>capacity){buffer=fm1_lcd_dma_pixels;capacity=sizeof(fm1_lcd_dma_pixels);}
 #endif
         if(!p || !size || size>capacity)return fail(-5);
@@ -218,7 +218,7 @@ static int command(uint8_t c,const uint8_t *p,size_t n) {
     if(send(0,&c,1))return -2;
     return n?send(1,p,n):0;
 }
-#if defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || defined(FM1_MOD_PLAYER)
+#if defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || defined(FM1_MOD_PLAYER) || defined(FM1_FORGE)
 #if defined(FM1_NES_PLAYER) && defined(FM1_LCD_STOCK_DMA)
 uint8_t *fm1_display_strip_buffer(size_t *length) {
     if (length) *length=sizeof(fm1_lcd_dma_pixels);
@@ -405,6 +405,17 @@ int fm1_display_async_rows(unsigned y,unsigned rows,const uint8_t *wire) {
 #else
     memcpy(fm1_lcd_frames[index]+y*FM1_LCD_WIRE_ROW_BYTES,wire,rows*480u);
 #endif
+    return async_publish_rows(rows);
+}
+#ifndef FM1_DISPLAY_TEST_HOST
+__attribute__((noinline,used))
+#endif
+int fm1_display_async_wire_rows(unsigned y,unsigned rows,const uint8_t *wire,size_t size) {
+    int index=lcd_async.building;
+    if(!async_rows_valid(y,rows,wire) || size!=(size_t)rows*FM1_LCD_WIRE_ROW_BYTES)return fail(-10);
+    /* Forge renderers already emit the selected wire format. Never pass
+     * packed RGB444 through the legacy RGB565 converter or retain its pointer. */
+    memcpy(fm1_lcd_frames[index]+y*FM1_LCD_WIRE_ROW_BYTES,wire,size);
     return async_publish_rows(rows);
 }
 #ifdef FM1_LCD_DIRECT

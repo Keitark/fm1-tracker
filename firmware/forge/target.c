@@ -1,0 +1,339 @@
+/* Fixed board/system HAL. User modules never acquire USB, GPIO or flash. */
+#ifdef FM1_FORGE_HOST
+#include "tests/fake_hal.h"
+#else
+#include "app_config.h"
+#include "system/includes.h"
+#include "system/task.h"
+#include "system/sys_time.h"
+#include "system/timer.h"
+#include "system/spinlock.h"
+#include "os/os_api.h"
+#include "asm/clock.h"
+#include "asm/iis.h"
+#include "asm/wdt.h"
+#endif
+#include "forge_target.h"
+#include "benchmark.h"
+#include "peripherals.h"
+#include "peripheral_logic.h"
+#include "fm1_wl82_keyscan.h"
+#include "fm1_volume.h"
+#include "fm1_board.h"
+#include "display_test.h"
+#ifdef FM1_USB_AUDIO
+#include "target.h"
+#endif
+#ifdef FM1_USB_VIDEO
+#include "fm1_uvc.h"
+#include "capture.h"
+#endif
+#include <stdio.h>
+#include <string.h>
+#ifndef FM1_FORGE_BOOT_CLOCK_HZ
+#define FM1_FORGE_BOOT_CLOCK_HZ 0
+#endif
+#if FM1_FORGE_BOOT_CLOCK_HZ != 0 && FM1_FORGE_BOOT_CLOCK_HZ != 320000000
+#error Unreviewed FM1 Forge CPU preset
+#endif
+#if !defined(FM1_KEYSCAN_IRQ) || !defined(FM1_KEYSCAN_PACED) || !defined(FM1_LCD_ASYNC)
+#error Forge requires paced IRQ controls and maintained async LCD ownership
+#endif
+static spinlock_t input_lock,audio_lock,control_lock;
+static fm1_wl82_keyscan scanner;
+static fm1_volume volume;
+static fm1_encoders encoders;
+static fm1_forge_controls controls;
+static fm1_forge_voice voice;
+static fm1_audio_startup envelope;
+static fm1_forge_frame published;
+/* The task owns benchmark; USB only queues requests and reads its snapshot. */
+static fm1_forge_benchmark benchmark,benchmark_published;
+static unsigned benchmark_request;
+static unsigned available,running,pending,quiescent,scan_enabled,audio_enabled;
+static int scan_timer;
+static unsigned scan_ticks,encoder_sequence,scan_irq_registered,audio_opened;
+static uint32_t audio_frames,audio_irqs,sys_hz,lsb_hz;
+static unsigned clock_prepared;
+static int key_error,lcd_error,audio_error,clock_error;
+const uint8_t fm1_forge_hal_access[5] __attribute__((used))={FM1_FORGE_HAL_BUTTONS,FM1_FORGE_HAL_ENCODERS,FM1_FORGE_HAL_VOLUME,FM1_FORGE_HAL_LCD,FM1_FORGE_HAL_AUDIO};
+static uint8_t strip[8u*FM1_LCD_WIRE_ROW_BYTES];
+#ifdef FM1_USB_VIDEO
+#ifdef FM1_FORGE_HOST
+#define FORGE_VIDEO_SCRATCH
+#else
+#define FORGE_VIDEO_SCRATCH __attribute__((section(".memp_memory_x"),aligned(4),used))
+#endif
+static fm1_forge_capture fm1_forge_video_capture FORGE_VIDEO_SCRATCH;
+#endif
+static unsigned take(spinlock_t *l){unsigned f;local_irq_save(f);arch_spin_lock(l);return f;}
+static void release(spinlock_t *l,unsigned f){arch_spin_unlock(l);local_irq_restore(f);}
+static uint32_t now_us(void *u){(void)u;return timer_get_ms()*1000u;}
+extern unsigned long jiffies_half_msec(void);
+static uint32_t benchmark_clock(void *u){(void)u;return (uint32_t)jiffies_half_msec();}
+/* SDK-default preserves the bootloader's clocks, including its observed
+ * 360M/180M/60M/90M tuple. It does not select an application-table preset.
+ * The opt-in320M application preset is applied ONCE before USB or DMA starts
+ * and retains HSB<=160M, SFC/LSB<=80M. Neither path is bench qualification. */
+__attribute__((noinline,used)) int fm1_forge_clock_prepare(void){
+    int hsb,sfc;
+    if(available || running || scan_timer || audio_opened || audio_enabled)return -83;
+    if(clock_prepared)return clock_error;
+    clock_prepared=1;sys_hz=(uint32_t)clk_get("sys");lsb_hz=(uint32_t)clk_get("lsb");
+#if FM1_FORGE_BOOT_CLOCK_HZ
+    if(sys_hz!=FM1_FORGE_BOOT_CLOCK_HZ && system_clock_set(FM1_FORGE_BOOT_CLOCK_HZ)<0)clock_error=-80;
+    sys_hz=(uint32_t)clk_get("sys");lsb_hz=(uint32_t)clk_get("lsb");
+    if(sys_hz!=FM1_FORGE_BOOT_CLOCK_HZ)clock_error=-81;
+#endif
+    hsb=clk_get("hsb");sfc=clk_get("sfc");
+    if(sys_hz<24000000u || sys_hz>480000000u || !lsb_hz || lsb_hz>80000000u ||
+       hsb<=0 || (uint32_t)hsb>sys_hz || sfc<=0 || sfc>hsb || lsb_hz>(uint32_t)hsb)clock_error=-82;
+#if FM1_FORGE_BOOT_CLOCK_HZ
+    if(hsb>160000000 || sfc>80000000)clock_error=-82;
+#endif
+    return clock_error;
+}
+static void scan_tick(void *u){unsigned f=take(&input_lock);(void)u;
+    if(!(++scan_ticks&1))fm1_volume_tick(&volume);
+    if(scan_enabled){fm1_encoders_capture(&encoders,&encoder_sequence,scanner.sequence,scanner.ready_rows);fm1_wl82_keyscan_async_kick(&scanner);}
+    release(&input_lock,f);
+}
+___interrupt __attribute__((used)) static void fm1_forge_keyscan_isr(void){unsigned f=take(&input_lock);if(scan_enabled)fm1_wl82_keyscan_async_step(&scanner);release(&input_lock,f);}
+__attribute__((noinline,used)) static void fm1_forge_audio_output(void *ctx,u8 *data,int len,u8 channel){
+    int32_t *pcm=(int32_t *)data;unsigned f;(void)ctx;
+    if(!data || len<=0)return;
+    if(channel!=3 || len!=512){memset(data,0,(unsigned)len);audio_error=-20;return;}
+    /* ALINK holds audio_lock. Only audio->input nesting is permitted; scanner
+     * and timer never take audio_lock. Module audio cannot access device APIs. */
+    f=take(&input_lock);envelope.target_q7=volume.valid?volume.target:0;release(&input_lock,f);
+#ifdef FM1_FORGE_USER_MODULE
+    memset(pcm,0,512);
+#if FM1_FORGE_HAL_AUDIO
+    if(fm1_forge_user_module.audio)fm1_forge_user_module.audio(pcm,64);
+#endif
+    fm1_forge_audio_limit(pcm,64);
+#else
+    fm1_forge_voice_render(&voice,pcm,64);
+#endif
+#ifdef FM1_USB_AUDIO
+    fm1_usb_audio_dac(pcm,64); /* Capture diagnostics then merge PC playback. */
+#endif
+    fm1_audio_startup_process24(&envelope,pcm);audio_frames+=64;
+}
+___interrupt __attribute__((used)) static void fm1_forge_alink_isr(void){unsigned f=take(&audio_lock);if(audio_enabled){iis_irq_handler(0);audio_irqs++;}release(&audio_lock,f);}
+/* One boundary for update, render and snapshots. Diagnostics retain real input;
+ * disabling access never stops the scanner or physical master-volume safety. */
+static void user_input(fm1_forge_input *out,const fm1_forge_input *in){
+    *out=*in;
+#ifdef FM1_FORGE_USER_MODULE
+#if !FM1_FORGE_HAL_BUTTONS
+    out->keys=out->seen=0;out->last_key=FM1_FORGE_NO_NOTE;
+#endif
+#if !FM1_FORGE_HAL_ENCODERS
+    memset(out->encoder,0,sizeof(out->encoder));memset(out->encoder_invalid,0,sizeof(out->encoder_invalid));out->encoder_seen=0;
+#endif
+#if !FM1_FORGE_HAL_VOLUME
+    out->volume_raw=out->volume_min=out->volume_max=0;out->volume_gain=out->volume_valid=0;out->volume_samples=out->volume_errors=0;
+#endif
+#endif
+}
+void fm1_forge_hal_snapshot(fm1_forge_input *out){unsigned f;if(!out)return;f=take(&control_lock);user_input(out,&published.input);release(&control_lock,f);}
+/* IRQ-safe final guard; normal FORGE STOP performs full task teardown first.
+ * No waits, logging, allocation or synchronous LCD transfers here. */
+__attribute__((noinline,used)) void fm1_peripheral_usb_audio_quiesce(void){unsigned f;
+#ifdef FM1_USB_VIDEO
+    fm1_uvc_capture_stop(); /* STOP/confirmed UBOOT permanently latch video off. */
+#endif
+    bit_clr_ie(IRQ_ALNK_IDX,0);bit_clr_ie(IRQ_SPI2_IDX,0);
+    f=take(&audio_lock);audio_enabled=0;fm1_forge_voice_init(&voice);release(&audio_lock,f);
+    f=take(&input_lock);scan_enabled=0;fm1_volume_stop(&volume);release(&input_lock,f);
+    f=take(&control_lock);if(benchmark_published.state==FM1_FORGE_BENCH_RUNNING && benchmark_request<2)benchmark_request=benchmark_request==1?3:2;release(&control_lock,f);
+}
+void fm1_peripheral_usb_audio_stop(void){fm1_peripheral_usb_audio_quiesce();}
+static void shutdown(void){unsigned f,request;uint32_t ticks;
+    if(scan_timer){sys_usec_timer_del(scan_timer);scan_timer=0;}
+    fm1_peripheral_usb_audio_quiesce();
+    f=take(&input_lock);if(scanner.running)fm1_wl82_keyscan_stop(&scanner);release(&input_lock,f);
+    if(scan_irq_registered){unrequest_irq(IRQ_SPI2_IDX,0);scan_irq_registered=0;}
+    if(audio_opened){unrequest_irq(IRQ_ALNK_IDX,0);iis_channel_off(8,0);iis_close(0);audio_opened=0;}
+    fm1_display_test_stop();
+#ifdef FM1_USB_AUDIO
+    fm1_usb_audio_stop();
+#endif
+#ifdef FM1_FORGE_USER_MODULE
+    if(fm1_forge_user_module.shutdown)fm1_forge_user_module.shutdown();
+#endif
+    f=take(&control_lock);request=benchmark_request;release(&control_lock,f);
+    ticks=benchmark_clock(0);if(request==1 || request==3)(void)fm1_forge_bench_start(&benchmark,ticks);
+    fm1_forge_bench_cancel(&benchmark,ticks);
+    f=take(&control_lock);running=pending=0;quiescent=1;published.input.keys=0;benchmark_request=0;benchmark_published=benchmark;release(&control_lock,f);
+}
+void fm1_peripheral_cancel(void){unsigned f=take(&control_lock);if(!quiescent)pending=1;release(&control_lock,f);}
+void fm1_peripheral_session_cancel(void){} /* DTR changes do not stop hardware. */
+int fm1_peripheral_idle(void){unsigned f=take(&control_lock);int q=quiescent;release(&control_lock,f);return q;}
+int fm1_peripheral_request(unsigned command,unsigned generation){(void)generation;if(command==1){fm1_peripheral_cancel();return 0;}return command==6?0:-1;}
+int fm1_peripheral_event(char *out,unsigned size){(void)out;(void)size;return 0;}
+__attribute__((noinline,used)) void fm1_display_snapshot(unsigned phase,const uint32_t *r){(void)phase;(void)r;}
+static void snapshot(fm1_forge_frame *out){unsigned f=take(&control_lock);*out=published;release(&control_lock,f);}
+#ifdef FM1_USB_VIDEO
+/* Foreground-only, bounded to one packet (at most two RGB rows). The copied
+ * Forge ABI frame remains fixed across all packets of this accepted frame. */
+__attribute__((noinline,used)) static void fm1_forge_capture_step(const fm1_forge_frame *frame,uint32_t now){
+    fm1_uvc_stream *stream;fm1_uvc_write write;unsigned f;int begin,reserved,converted;
+    fm1_forge_capture_renderer render=0;
+    local_irq_save(f);
+    if(!fm1_uvc_capture_enabled() || !(stream=fm1_uvc_stream_get())){
+        local_irq_restore(f);fm1_forge_capture_cancel(&fm1_forge_video_capture);return;}
+    begin=fm1_uvc_begin_frame(stream,now);reserved=fm1_uvc_reserve_bytes(stream,now,&write);
+    local_irq_restore(f);
+    if(begin==FM1_UVC_OK){fm1_forge_frame frozen=*frame;user_input(&frozen.input,&frame->input);
+#if defined(FM1_FORGE_USER_MODULE) && !FM1_FORGE_HAL_BUTTONS
+        frozen.note=FM1_FORGE_NO_NOTE;
+#endif
+        fm1_forge_capture_accept(&fm1_forge_video_capture,&frozen);}
+    if(reserved!=FM1_UVC_OK)return;
+#if defined(FM1_FORGE_USER_MODULE) && FM1_FORGE_HAL_LCD
+    render=fm1_forge_user_module.render;
+#endif
+    converted=fm1_forge_capture_packet(&fm1_forge_video_capture,&write,render);
+    now=timer_get_ms();local_irq_save(f);
+    if(converted==FM1_UVC_OK)(void)fm1_uvc_publish_bytes(stream,now,&write);
+    else (void)fm1_uvc_cancel_bytes(stream,now,&write);
+    local_irq_restore(f);
+}
+#endif
+int fm1_forge_usb_command(const char *s,uint32_t now,fm1_forge_reply reply,void *ctx){
+    fm1_forge_frame p;unsigned a,r,q,f;char line[224];(void)now;
+#ifdef FM1_USB_VIDEO
+    if(!strcmp(s,"FORGE VIDEO") || !strcmp(s,"USB VIDEO STATUS")){fm1_uvc_status v;
+        if(fm1_uvc_get_status(&v)){snprintf(line,sizeof(line),"USB VIDEO active=%lu cfg=%lu commit=%lu alt=%lu shutdown=%lu started=%lu sent=%lu dropped=%lu packets=%lu retries=%lu backpressure=%lu\n",
+            (unsigned long)v.active,(unsigned long)v.configured,(unsigned long)v.committed,(unsigned long)v.alt,(unsigned long)v.shutdown,(unsigned long)v.frames_started,(unsigned long)v.frames_sent,(unsigned long)v.frames_dropped,(unsigned long)v.packets_sent,(unsigned long)v.retries,(unsigned long)v.backpressure);reply(ctx,line);}return 1;}
+#endif
+    if(strcmp(s,"FORGE STATUS") && strcmp(s,"FORGE INPUT") && strcmp(s,"FORGE AUDIO") && strcmp(s,"FORGE LCD") && strcmp(s,"FORGE CLOCK") && strcmp(s,"FORGE MODULE") && strcmp(s,"FORGE STOP") && strcmp(s,"HAL GET") && strcmp(s,"FORGE HELP") && strcmp(s,"FORGE BENCH") && strcmp(s,"FORGE BENCH STATUS") && strcmp(s,"FORGE BENCH START") && strcmp(s,"FORGE BENCH CANCEL"))return 0;
+    if(!strcmp(s,"FORGE STOP")){fm1_peripheral_cancel();reply(ctx,"OK FORGE STOP REQUESTED\n");return 1;}
+    if(!strcmp(s,"FORGE HELP")){reply(ctx,"FORGE STATUS INPUT AUDIO LCD CLOCK MODULE STOP; BENCH START|STATUS|CANCEL; HAL GET\n");return 1;}
+    if(!strncmp(s,"FORGE BENCH",11)){
+        fm1_forge_benchmark b;unsigned request;int rc=0;
+        f=take(&control_lock);
+        if(!strcmp(s,"FORGE BENCH START")){
+            if(benchmark_request || benchmark_published.state==FM1_FORGE_BENCH_RUNNING)rc=-1;
+            else if(!running || pending || published.fault)rc=-2;
+            else {benchmark_request=1;fm1_forge_bench_init(&benchmark_published);benchmark_published.state=FM1_FORGE_BENCH_RUNNING;}
+        }else if(!strcmp(s,"FORGE BENCH CANCEL") && benchmark_published.state==FM1_FORGE_BENCH_RUNNING && benchmark_request<2)benchmark_request=benchmark_request==1?3:2;
+        b=benchmark_published;request=benchmark_request;release(&control_lock,f);
+        if(rc){reply(ctx,rc==-1?"ERROR FORGE BENCH busy\n":"ERROR FORGE BENCH unavailable\n");return 1;}
+        snprintf(line,sizeof(line),"FORGE BENCH state=%s done=%lu total=%lu active_ticks=%lu wall_ticks=%lu batches=%lu tick_us=500 queued=%u cancel=%u fault=%d\n",request==1?"queued":fm1_forge_bench_state_name(b.state),(unsigned long)b.done,(unsigned long)FM1_FORGE_BENCH_TOTAL,(unsigned long)b.active_ticks,(unsigned long)b.wall_ticks,(unsigned long)b.batches,request==1,request>=2,b.fault);reply(ctx,line);
+        snprintf(line,sizeof(line),"FORGE BENCH x=%08lx acc=%08lx checksum=%08lx expected=%08lx\n",(unsigned long)b.x,(unsigned long)b.acc,(unsigned long)b.checksum,(unsigned long)FM1_FORGE_BENCH_EXPECTED_CHECKSUM);reply(ctx,line);return 1;
+    }
+    snapshot(&p);f=take(&control_lock);a=available;r=running;q=pending;release(&control_lock,f);
+    if(!strcmp(s,"FORGE INPUT") || !strcmp(s,"HAL GET")){
+        unsigned i;snprintf(line,sizeof(line),"FORGE INPUT keys=%08lx%08lx seen=%08lx%08lx scans=%lu errors=%lu volume=%u gain=%u valid=%u min=%u max=%u adc_samples=%lu adc_errors=%lu\n",
+            (unsigned long)(p.input.keys>>32),(unsigned long)p.input.keys,(unsigned long)(p.input.seen>>32),(unsigned long)p.input.seen,
+            (unsigned long)p.input.scans,(unsigned long)p.input.input_errors,p.input.volume_raw,p.input.volume_gain,p.input.volume_valid,p.input.volume_min,p.input.volume_max,(unsigned long)p.input.volume_samples,(unsigned long)p.input.volume_errors);reply(ctx,line);
+        for(i=0;i<7;i++){snprintf(line,sizeof(line),"FORGE KNOB id=%u name=%s edges=%ld invalid=%lu seen=%u\n",i,fm1_encoder_names[i],(long)p.input.encoder[i],(unsigned long)p.input.encoder_invalid[i],(p.input.encoder_seen>>i)&1u);reply(ctx,line);}
+    }else if(!strcmp(s,"FORGE AUDIO")){
+        snprintf(line,sizeof(line),"FORGE AUDIO frames=%lu irqs=%lu note=%u rate=44100 peak=131072 cap=88200 fault=%d\n",(unsigned long)p.audio_frames,(unsigned long)p.audio_irqs,p.note,audio_error);reply(ctx,line);
+#ifdef FM1_USB_AUDIO
+        fm1_usb_audio_status(line,sizeof(line));reply(ctx,line);fm1_usb_audio_transport_status(line,sizeof(line));reply(ctx,line);
+#endif
+    }else if(!strcmp(s,"FORGE LCD")){snprintf(line,sizeof(line),"FORGE LCD completed=%lu submitted=%lu busy=%lu errors=%lu fps10=%u format=%s divider=%u fault=%d\n",
+        (unsigned long)p.lcd_completed,(unsigned long)p.ui_frames,(unsigned long)p.lcd_busy,(unsigned long)p.lcd_errors,p.fps_tenths,FM1_LCD_FORMAT_NAME,FM1_LCD_STREAM_BAUD,lcd_error);reply(ctx,line);
+    }else if(!strcmp(s,"FORGE CLOCK")){int sys=clk_get("sys"),hsb=clk_get("hsb"),lsb=clk_get("lsb"),sfc=clk_get("sfc");snprintf(line,sizeof(line),"FORGE CLOCK preset=%s sys=%ld hsb=%ld lsb=%ld sfc=%ld fault=%d dynamic=blocked qualified=0\n",FM1_FORGE_BOOT_CLOCK_HZ?"sdk-320":"sdk-default",(long)sys,(long)hsb,(long)lsb,(long)sfc,clock_error);reply(ctx,line);
+    }else if(!strcmp(s,"FORGE MODULE")){snprintf(line,sizeof(line),"FORGE MODULE abi=1 user=%u name=%s system=usb,uboot,input,lcd,audio hal=%u,%u,%u,%u,%u\n",p.module_user,p.module_user?fm1_forge_user_module.name:"diagnostics",FM1_FORGE_HAL_BUTTONS,FM1_FORGE_HAL_ENCODERS,FM1_FORGE_HAL_VOLUME,FM1_FORGE_HAL_LCD,FM1_FORGE_HAL_AUDIO);reply(ctx,line);
+    }else{snprintf(line,sizeof(line),"FORGE STATUS ready=%u running=%u pending=%u frames=%lu audio_frames=%lu scans=%lu keys=%08lx%08lx lcd=%d fault=%d input_errors=%lu adc_errors=%lu\n",a,r,q,
+        (unsigned long)p.lcd_completed,(unsigned long)p.audio_frames,(unsigned long)p.input.scans,(unsigned long)(p.input.keys>>32),(unsigned long)p.input.keys,lcd_error,p.fault,(unsigned long)p.input.input_errors,(unsigned long)p.input.volume_errors);reply(ctx,line);}
+    return 1;
+}
+__attribute__((noinline,used)) static void fm1_forge_task(void *unused){
+    struct iis_platform_data pd;fm1_forge_frame frame={0},view={0};uint32_t last_ui=0,last_fps=0,fps_count=0;unsigned y=240;
+    int32_t previous_note=255;unsigned f,retries=0;uint32_t retry_at=0;(void)unused;
+    fm1_forge_controls_init(&controls);fm1_forge_voice_init(&voice);fm1_audio_startup_reset(&envelope);
+#ifdef FM1_USB_VIDEO
+    fm1_forge_capture_init(&fm1_forge_video_capture);
+#endif
+#ifdef FM1_FORGE_USER_MODULE
+    if(fm1_forge_user_module.abi!=FM1_FORGE_ABI)audio_error=-90;
+    else if(fm1_forge_user_module.init)fm1_forge_user_module.init();
+    frame.module_user=1;
+#endif
+#ifdef FM1_USB_AUDIO
+    frame.usb_audio=1;
+#endif
+    frame.sys_hz=sys_hz;frame.lsb_hz=lsb_hz;frame.note=255;
+    memset(&pd,0,sizeof(pd));pd.port_sel=IIS_PORTC;pd.channel_out=pd.data_width=8;pd.mclk_output=1;pd.sr_points=128;
+    if(!clock_error && !audio_error){audio_error=iis_open(&pd,0);if(!audio_error){audio_opened=1;iis_set_dec_data_handler(0,fm1_forge_audio_output,0);audio_error=iis_set_sample_rate(44100,0);}}
+    if(!audio_error && audio_opened){f=take(&input_lock);audio_error=fm1_volume_start(&volume);release(&input_lock,f);
+        scan_timer=sys_usec_timer_add(0,scan_tick,1000,1,0);if(scan_timer<=0){scan_timer=0;key_error=-30;}
+        f=take(&audio_lock);audio_enabled=!audio_error;release(&audio_lock,f);
+        if(audio_enabled){request_irq(IRQ_ALNK_IDX,3,fm1_forge_alink_isr,0);iis_channel_on(8,0);}}
+    lcd_error=fm1_display_test_init();if(!lcd_error)lcd_error=fm1_display_async_start();
+    if(!key_error){bit_clr_ie(IRQ_SPI2_IDX,0);f=take(&input_lock);key_error=fm1_wl82_keyscan_async_start(&scanner,0,now_us);scan_enabled=!key_error;release(&input_lock,f);
+        if(scan_enabled){request_irq(IRQ_SPI2_IDX,5,fm1_forge_keyscan_isr,0);scan_irq_registered=1;}}
+    f=take(&control_lock);running=1;release(&control_lock,f);
+    for(;;){
+        uint32_t now=timer_get_ms();uint8_t rows[11];int rc;fm1_volume v;int32_t counts[7];uint32_t invalid[7];unsigned stop,note;
+        f=take(&control_lock);stop=pending;release(&control_lock,f);if(stop){shutdown();for(;;)os_time_dly(100);}
+        if(!scan_enabled && key_error && scan_timer>0 && retries<3 && (uint32_t)(now-retry_at)>=50){
+            retries++;bit_clr_ie(IRQ_SPI2_IDX,0);f=take(&input_lock);
+            encoders.valid=0;rc=fm1_wl82_keyscan_async_start(&scanner,0,now_us);encoder_sequence=scanner.sequence;
+            if(!rc)scan_enabled=1;release(&input_lock,f);
+            if(!rc){request_irq(IRQ_SPI2_IDX,5,fm1_forge_keyscan_isr,0);scan_irq_registered=1;key_error=0;}
+            else {key_error=rc;retry_at=now;}
+        }
+        f=take(&input_lock);rc=scan_enabled?fm1_wl82_keyscan_async_raw(&scanner,rows):FM1_NES_BUSY;
+        v=volume;memcpy(counts,encoders.count,sizeof(counts));memcpy(invalid,encoders.invalid,sizeof(invalid));release(&input_lock,f);
+        if(!rc)fm1_forge_controls_scan(&controls,fm1_stock_decode_keys(rows),now);
+        else if(rc!=FM1_NES_BUSY){controls.input.input_errors++;key_error=rc;retry_at=now;bit_clr_ie(IRQ_SPI2_IDX,0);
+            f=take(&input_lock);scan_enabled=0;fm1_wl82_keyscan_stop(&scanner);release(&input_lock,f);
+            if(scan_irq_registered){unrequest_irq(IRQ_SPI2_IDX,0);scan_irq_registered=0;}
+            controls.input.keys=controls.candidate=0;controls.initialized=0; /* Faulted input is never held during recovery. */}
+        fm1_forge_controls_stale(&controls,now);fm1_forge_controls_encoders(&controls,counts,invalid);
+        fm1_forge_controls_volume(&controls,v.raw,v.target,v.valid);controls.input.volume_samples=v.samples;controls.input.volume_errors=v.errors;if(v.errors && !audio_error)audio_error=-31;
+        note=fm1_forge_note_for_keys(controls.input.keys);
+        if(note!=(unsigned)previous_note){f=take(&audio_lock);if(note==255)fm1_forge_voice_release(&voice);else fm1_forge_voice_note(&voice,note);release(&audio_lock,f);previous_note=(int32_t)note;}
+#ifdef FM1_FORGE_USER_MODULE
+        {fm1_forge_input input;user_input(&input,&controls.input);if(fm1_forge_user_module.update)fm1_forge_user_module.update(&input,now);}
+#endif
+        frame.input=controls.input;frame.uptime_ms=now;
+        f=take(&audio_lock);frame.audio_frames=audio_frames;frame.audio_irqs=audio_irqs;frame.note=voice.note;release(&audio_lock,f);
+        if(!lcd_error){fm1_lcd_async_stats lcd;rc=fm1_display_async_service();if(rc)lcd_error=rc;
+            fm1_display_async_snapshot(&lcd);frame.lcd_completed=lcd.completed;frame.lcd_busy=lcd.busy_skips;frame.lcd_errors=lcd.errors;
+            if((uint32_t)(now-last_fps)>=1000){uint32_t elapsed=now-last_fps;frame.fps_tenths=(uint16_t)((lcd.completed-fps_count)*10000u/elapsed);last_fps=now;fps_count=lcd.completed;}
+            if(y==240 && (uint32_t)(now-last_ui)>=33){rc=fm1_display_async_begin(1);if(rc<0)lcd_error=rc;else if(rc){view=frame;user_input(&view.input,&frame.input);
+#if defined(FM1_FORGE_USER_MODULE) && !FM1_FORGE_HAL_BUTTONS
+                view.note=FM1_FORGE_NO_NOTE;
+#endif
+                y=0;last_ui=now;frame.ui_frames++;}}
+            /* Build at most128 rows per task turn, then yield. The scanner,
+             * volume timer and DAC run independently; no whole-frame wait. */
+            {unsigned built=0;while(y<240 && !lcd_error && built<16){
+#if defined(FM1_FORGE_USER_MODULE) && FM1_FORGE_HAL_LCD
+                if(fm1_forge_user_module.render)fm1_forge_user_module.render(&view,y,8,strip,FM1_LCD_WIRE_BPP);else (void)fm1_forge_render(&view,y,8,strip,FM1_LCD_WIRE_BPP);
+#else
+                (void)fm1_forge_render(&view,y,8,strip,FM1_LCD_WIRE_BPP);
+#endif
+                rc=fm1_display_async_wire_rows(y,8,strip,sizeof(strip));if(rc<0)lcd_error=rc;else y+=8;built++;}}}
+        frame.fault=(int16_t)(clock_error?clock_error:audio_error?audio_error:key_error?key_error:lcd_error);
+#ifdef FM1_USB_VIDEO
+        fm1_forge_capture_step(&frame,timer_get_ms()); /* LCD work goes first. */
+#endif
+        {unsigned request;uint32_t ticks;
+            f=take(&control_lock);request=benchmark_request;benchmark_request=0;release(&control_lock,f);
+            ticks=benchmark_clock(0);
+            if(request==1 || request==3)(void)fm1_forge_bench_start(&benchmark,ticks);
+            if(request>=2)fm1_forge_bench_cancel(&benchmark,ticks);
+            if(frame.fault)fm1_forge_bench_abort(&benchmark,ticks,frame.fault);
+            /* No spinlock/IRQ mask is held across this bounded foreground work. */
+            fm1_forge_bench_step(&benchmark,benchmark_clock,0);
+            f=take(&control_lock);benchmark_published=benchmark;release(&control_lock,f);
+        }
+        f=take(&control_lock);published=frame;release(&control_lock,f);wdt_clear();
+#ifdef FM1_USB_VIDEO
+        os_time_dly(0); /* ProTracker's bounded yield; no 10 ms producer sleep. */
+#else
+        os_time_dly(1);
+#endif
+    }
+}
+int fm1_peripheral_start_task(void){int rc;available=running=pending=quiescent=0;benchmark_request=0;fm1_forge_bench_init(&benchmark);benchmark_published=benchmark;rc=task_create(fm1_forge_task,0,"#C0peripheral");
+    if(rc){quiescent=1;return rc;}available=1;return 0;}

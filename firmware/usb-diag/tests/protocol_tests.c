@@ -6,6 +6,15 @@
 #define CHECK(x) do {if(!(x)){fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x);exit(1);}} while(0)
 static char response[1024];
 static unsigned replies;
+#ifdef FM1_FORGE
+static unsigned forge_requests;
+int fm1_forge_usb_command(const char *s,uint32_t now,fm1_diag_reply cb,void *ctx){
+    (void)now;
+    if(!strcmp(s,"FORGE HELP")){cb(ctx,"FORGE STATUS INPUT AUDIO LCD CLOCK MODULE STOP; HAL GET\n");return 1;}
+    if(!strcmp(s,"FORGE STATUS") || !strcmp(s,"FORGE STOP")){++forge_requests;cb(ctx,"FORGE RESPONSE\n");return 1;}
+    return 0;
+}
+#endif
 static void reply(void *ctx,const char *s) {
     (void)ctx; CHECK(strlen(s)<sizeof(response));strcpy(response,s);++replies;
 }
@@ -21,6 +30,12 @@ static void valid(fm1_diag_protocol *p) {
 int main(void) {
     fm1_diag_protocol p;unsigned i,t,r;char big[600];uint32_t random=1;
     fm1_diag_reset(&p);feed(&p,"HELLO\n",0);CHECK(strstr(response,"COMMIT=BLOCKED"));
+#ifdef FM1_FORGE
+    CHECK(!strcmp(response,"FM1DIAG/1 FM1-FORGE/1 UBOOT=SERIAL COMMIT=BLOCKED\n"));
+    feed(&p,"FORGE STATUS\n",0);CHECK(forge_requests==1 && !p.boot_requested);
+    feed(&p,"FORGE STOP\nHELLO\n",0);CHECK(forge_requests==1);
+    feed(&p,"BEGIN 00000001 00000000\n",0);feed(&p,"FORGE STOP\n",0);CHECK(forge_requests==1);
+#endif
     feed(&p,"UBOOT\n",0);CHECK(p.boot_requested);
     fm1_diag_reset(&p);feed(&p,"UBOOT\nHELLO\n",0);CHECK(!p.boot_requested);
     feed(&p,"BEGIN 00000001 00000000\n",0);feed(&p,"UBOOT\n",0);CHECK(!p.boot_requested && !p.active);
@@ -34,7 +49,9 @@ int main(void) {
         feed(&p,"BEGIN 00000001 00000000\n",0);feed(&p,"TEST AUDIO\n",0);CHECK(!p.test_requested && !p.active);
         feed(&p,"TEST UNKNOWN\n",0);CHECK(!p.test_requested);
         feed(&p,"HELP\n",0);
-#ifdef FM1_NES_PLAYER
+#ifdef FM1_FORGE
+        CHECK(strstr(response,"FORGE STATUS") && strstr(response,"FORGE ")==response);
+#elif defined(FM1_NES_PLAYER)
         CHECK(strstr(response,"TEST NES"));
         fm1_diag_reset(&p);feed(&p,"TEST NES\n",0);CHECK(p.test_requested==7);
         fm1_diag_reset(&p);feed(&p,"TEST NES\nHELLO\n",0);CHECK(!p.test_requested);

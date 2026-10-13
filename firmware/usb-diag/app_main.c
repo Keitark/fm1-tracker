@@ -8,6 +8,15 @@
 #include "boot_trace.h"
 #include "protocol.h"
 #include "boot_entry.h"
+#ifdef FM1_USB_AUDIO
+#include "target.h"
+#endif
+#ifdef FM1_USB_VIDEO
+#include "fm1_uvc.h"
+#endif
+#ifdef FM1_FORGE
+#include "forge_target.h"
+#endif
 #ifdef FM1_PERIPHERAL_TESTS
 #include "peripherals.h"
 #endif
@@ -16,9 +25,15 @@ const struct irq_info irq_info_table[]={{-1,-1,-1}};
 const struct task_info task_info_table[]={
     {"app_core",15,4096,1024},{"sys_event",29,512,0},
     {"systimer",14,256,0},{"sys_timer",9,512,128},
+#ifdef FM1_FORGE
+    {"#C0usb_diag",10,2048,0},
+#else
     {"usb_diag",10,2048,0},
+#endif
 #ifdef FM1_PERIPHERAL_TESTS
-#if defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || defined(FM1_MOD_PLAYER)
+#ifdef FM1_FORGE
+    {"#C0peripheral",8,4096,0},
+#elif defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || defined(FM1_MOD_PLAYER)
     {"peripheral",8,4096,0},
 #else
     {"peripheral",8,2048,0},
@@ -33,6 +48,9 @@ static char tx[1024];
 static unsigned tx_r,tx_w;
 extern int fm1_cdc_ready(usb_dev id);
 extern volatile unsigned fm1_cdc_generation;
+#ifdef FM1_FORGE
+extern u32 fm1_cdc_write_packet(usb_dev id,u8 *data,u32 size,unsigned generation);
+#endif
 
 static void reply(void *ctx,const char *s) {
     unsigned n=strlen(s),i; (void)ctx;
@@ -51,7 +69,7 @@ static void fm1_usb_task(void *arg) {
         uint32_t now=timer_get_ms();
         ++fm1_usb_heartbeat;
         if(generation!=fm1_cdc_generation || !fm1_cdc_ready(FM1_USB_CONTROLLER)) {
-#ifdef FM1_PERIPHERAL_TESTS
+#if defined(FM1_PERIPHERAL_TESTS) && !defined(FM1_FORGE)
             fm1_peripheral_session_cancel();
 #endif
             generation=fm1_cdc_generation; fm1_diag_reset(&protocol); tx_r=tx_w=0; last=now-1000;
@@ -67,7 +85,7 @@ static void fm1_usb_task(void *arg) {
             n=cdc_read_data(FM1_USB_CONTROLLER,rx,sizeof(rx));
             if(generation!=fm1_usb_rx_generation()) {
                 generation=fm1_usb_rx_generation();fm1_diag_reset(&protocol);tx_r=tx_w=0;
-#ifdef FM1_PERIPHERAL_TESTS
+#if defined(FM1_PERIPHERAL_TESTS) && !defined(FM1_FORGE)
                 fm1_peripheral_session_cancel();
 #endif
             }
@@ -97,12 +115,16 @@ static void fm1_usb_task(void *arg) {
                 char s[192]; last=now;
                 snprintf(s,sizeof(s),"# FM1DIAG/1 "
 #ifdef FM1_PERIPHERAL_TESTS
+#ifdef FM1_FORGE
+                         "profile=fm1-forge/1 "
+#else
 #ifdef FM1_MOD_PLAYER
                          "profile=mod-editor/1 "
 #elif defined(FM1_MDX_PLAYER)
                          "profile=mdx-karaoke/1 "
 #else
                          "profile=peripheral-test/1 "
+#endif
 #endif
 #endif
                          "stage=%lu trace=%08lx uptime=%lu boot=serial-uboot update=verify-only commit=blocked\n",
@@ -113,13 +135,26 @@ static void fm1_usb_task(void *arg) {
              * One owner/task for CDC data mutex; ISR never transmits. */
             n=tx_w-tx_r; if(n>sizeof(out))n=sizeof(out);
             for(i=0;i<n;i++)out[i]=tx[(tx_r+i)%sizeof(tx)];
+#ifdef FM1_FORGE
+            if(n)tx_r+=fm1_cdc_write_packet(FM1_USB_CONTROLLER,out,n,generation);
+#else
             if(n)tx_r+=cdc_write_data(FM1_USB_CONTROLLER,out,n);
+#endif
         }
         os_time_dly(1);
     }
 }
 void app_main(void) {
     fm1_boot_trace_mark(FM1_TRACE_APP); fm1_usb_stage=1;
+#ifdef FM1_FORGE
+    fm1_forge_clock_prepare();
+#endif
+#ifdef FM1_USB_AUDIO
+    fm1_usb_audio_init();
+#endif
+#ifdef FM1_USB_VIDEO
+    fm1_uvc_setup_init(); /* Exactly once, before worker and USB attachment. */
+#endif
 #ifdef FM1_PERIPHERAL_TESTS
     /* A failed optional worker must not remove serial recovery. TEST STATUS
      * exposes ready=0 and test starts are rejected if task creation fails. */

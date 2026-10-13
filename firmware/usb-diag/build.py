@@ -1,4 +1,4 @@
-"""Offline WL82 USB-only diagnostic link; no packaging, flashing or UAC."""
+"""Offline WL82 CDC diagnostics and optional composite UAC1 link; no device I/O."""
 import argparse
 import hashlib
 import json
@@ -22,6 +22,14 @@ def main():
                    help='Only USB0 has a reviewed link contract; connector routing is still unverified')
     p.add_argument('--out',type=Path,required=True)
     p.add_argument('--peripheral-tests',action='store_true')
+    p.add_argument('--factory-diag',action='store_true',help='Asset-free FM1-FORGE diagnostics with persistent LCD/controls, key tones and composite CDC/UAC1')
+    p.add_argument('--forge-no-uac',action='store_true',help='Factory diagnostics with CDC only; no audio USB class')
+    p.add_argument('--forge-uvc',action='store_true',help='Optional ProTracker-derived USB0 UVC screen: 256x240 YUY2 / 5 fps; requires factory diagnostics')
+    p.add_argument('--forge-clock',choices=('sdk-default','sdk-320'),default='sdk-default')
+    p.add_argument('--forge-lcd',choices=('stock-dma','spi15-rgb444','spi30-rgb444'),default='stock-dma')
+    p.add_argument('--forge-user-module',type=Path,help='Explicit self-authored C module source, included in source-hash closure')
+    hal_names=('buttons','encoders','volume','lcd','audio')
+    for name in hal_names:p.add_argument('--forge-hal-'+name,type=int,choices=(0,1),help='Select user '+name+' HAL access; fixed diagnostics/recovery remain active (default 1)')
     p.add_argument('--mdx',action='store_true',help='Standalone flash-demo MDX/PDX karaoke player with volatile CDC uploads')
     p.add_argument('--mod',action='store_true',help='ProTracker-style four-channel MOD editor with volatile CDC file transfer')
     p.add_argument('--mod-source-dir',type=Path,
@@ -53,6 +61,17 @@ def main():
     p.add_argument('--lcd-stock-dma',action='store_true',help='Stock setup-before-delay, DMA parameters, fixed register snapshots; requires --lcd-stock-fill')
     p.add_argument('--lcd-stock-sequence',action='store_true',help='Stock PA2/GPIO setup, scheduler delays and 40-byte DMA black first fill; requires --lcd-stock-dma')
     a=p.parse_args(); out=a.out.resolve(); out.mkdir(parents=True,exist_ok=True)
+    if a.factory_diag:
+        if a.mdx or a.mod or a.nes_smb1:p.error('Factory diagnostic excludes player profiles and external media')
+        if a.forge_clock=='sdk-320' and a.forge_lcd!='stock-dma':p.error('SDK 320 MHz uses a 53 MHz LSB bus; fast LCD presets require 60 MHz')
+        a.peripheral_tests=True
+        a.lcd_stock_fill=a.lcd_stock_dma=a.lcd_stock_sequence=True
+        a.lcd_async=True
+        a.lcd_spi15=a.forge_lcd=='spi15-rgb444';a.lcd_spi30=a.forge_lcd=='spi30-rgb444'
+        a.lcd_rgb444=a.lcd_spi15 or a.lcd_spi30
+    elif a.forge_no_uac or a.forge_uvc or a.forge_user_module or a.forge_clock!='sdk-default' or a.forge_lcd!='stock-dma' or any(getattr(a,'forge_hal_'+name) is not None for name in hal_names):p.error('Forge options require --factory-diag')
+    hal_access={name:True if getattr(a,'forge_hal_'+name) is None else bool(getattr(a,'forge_hal_'+name)) for name in hal_names}
+    usb_audio=a.factory_diag and not a.forge_no_uac
     if (a.mdx or a.mod) and (a.nes_smb1 or not a.lcd_stock_sequence):p.error('Player profiles require stock LCD sequence and exclude NES')
     if a.mdx and a.mod:p.error('Select only one player profile')
     if a.mod and not a.peripheral_tests:p.error('--mod requires --peripheral-tests')
@@ -73,7 +92,7 @@ def main():
     if a.nes_profile and not a.nes_render_skip:p.error('--nes-profile requires --nes-render-skip')
     if a.nes_tiles and not a.nes_render_skip:p.error('--nes-tiles requires --nes-render-skip')
     if a.nes_volume and not (a.keyscan_paced and a.nes_audio_priority):p.error('--nes-volume requires paced scanner and audio priority')
-    if a.lcd_async and not (a.nes_render_skip or a.mod):p.error('--lcd-async requires --nes-render-skip or --mod')
+    if a.lcd_async and not (a.nes_render_skip or a.mod or a.factory_diag):p.error('--lcd-async requires --nes-render-skip, --mod or --factory-diag')
     if a.lcd_spi15 and not a.lcd_async:p.error('--lcd-spi15 requires --lcd-async')
     if a.lcd_spi30 and not a.lcd_async:p.error('--lcd-spi30 requires --lcd-async')
     if a.lcd_spi30 and a.lcd_spi15:p.error('Select only one LCD SPI clock experiment')
@@ -99,6 +118,11 @@ def main():
     text=MAKE.read_text(encoding='utf-8');flags=make_list(text,'CFLAGS')
     defines=make_list(text,'DEFINES')+['-DFM1_USB_CONTROLLER='+str(a.controller)]
     if a.peripheral_tests:defines+=['-DFM1_PERIPHERAL_TESTS=1']
+    if a.factory_diag:defines+=['-DFM1_FORGE=1','-DFM1_FACTORY_DIAG=1','-DFM1_TARGET_PI32V2=1','-DFM1_KEYSCAN_DMA2=1','-DFM1_KEYSCAN_IRQ=1','-DFM1_KEYSCAN_PACED=1','-DFM1_FORGE_BOOT_CLOCK_HZ='+('320000000' if a.forge_clock=='sdk-320' else '0')]
+    if a.factory_diag:defines+=['-DFM1_FORGE_HAL_'+name.upper()+'='+str(int(hal_access[name])) for name in hal_names]
+    if usb_audio:defines+=['-DFM1_USB_AUDIO=1']
+    if a.forge_uvc:defines+=['-DFM1_USB_VIDEO=1','-DFM1_UVC_IPAD_PAD=1']
+    if a.forge_user_module:defines+=['-DFM1_FORGE_USER_MODULE=1']
     if a.mdx:defines+=['-DFM1_MDX_PLAYER=1','-DFM1_TARGET_PI32V2=1','-DFM1_KEYSCAN_DMA2=1','-DFM1_KEYSCAN_IRQ=1','-DFM1_KEYSCAN_PACED=1']
     if a.mod:defines+=['-DFM1_MOD_PLAYER=1','-DFM1_TARGET_PI32V2=1','-DFM1_KEYSCAN_DMA2=1','-DFM1_KEYSCAN_IRQ=1','-DFM1_KEYSCAN_PACED=1']
     if a.mod_default_song:defines+=['-DFM1_MOD_EMBEDDED_DEFAULT=1']
@@ -124,15 +148,29 @@ def main():
     if a.nes_no_keys:defines+=['-DFM1_NES_NO_KEYS=1']
     if a.nes_input_recovery:defines+=['-DFM1_NES_INPUT_RECOVERY=1']
     includes=['-I'+str(x) for x in (HERE,NES/'boot',NES/'include',SDK/'apps/common',SDK/'apps/common/usb',SDK/'apps/common/usb/device')]
+    if a.factory_diag:includes=['-I'+str(HERE.parent/'forge'),'-I'+str(HERE.parent/'usb-audio')]+includes
+    if a.forge_uvc:includes=['-I'+str(HERE.parent/'usb-video')]+includes
+    if a.forge_user_module:includes=['-I'+str(a.forge_user_module.resolve().parent)]+includes
     includes+=['-I'+str(sdk_path(x[2:])) for x in make_list(text,'INCLUDES')]
     sources=[sdk_path(x) for name in ('c_SRC_FILES','S_SRC_FILES') for x in make_list(text,name)]
     sources=[s for s in sources if s.name not in ('app_main.c','board.c','cpp_run_init.c')]
     sources += [NES/'boot'/n for n in ('board.c','boot_compat.c','boot_trace.c','board_power.c')]
     sources += [HERE/n for n in ('app_main.c','protocol.c','descriptors.c','usb_policy.c','dma.c','rx_channel.c','boot_entry.c')]
+    if a.factory_diag:sources += [HERE/'packet.c']
     if a.peripheral_tests:
-        sources += [HERE/n for n in (('peripheral_logic.c',) if (a.mdx or a.mod) else ('peripherals.c','peripheral_logic.c'))]
+        sources += [HERE/n for n in (('peripheral_logic.c',) if (a.mdx or a.mod or a.factory_diag) else ('peripherals.c','peripheral_logic.c'))]
         sources += [NES/'boot/display_test.c',NES/'src/fm1_wl82_keyscan.c',NES/'src/fm1_stock_keys.c']
     speed_sources=set()
+    if a.factory_diag:
+        factory=[HERE.parent/'forge'/n for n in ('forge.c','target.c','user_module.c','render.c','benchmark.c')]
+        if a.forge_user_module:
+            custom=a.forge_user_module.resolve()
+            if not custom.is_file() or custom.suffix!='.c':raise ValueError('Forge user module requires an existing .c source')
+            factory[factory.index(HERE.parent/'forge/user_module.c')]=custom
+        if usb_audio:factory += [HERE.parent/'usb-audio'/n for n in ('bridge.c','profile.c','target.c')]
+        if a.forge_uvc:factory += [HERE.parent/'usb-video'/n for n in ('uvc_stream.c','uvc_control.c','fm1_uvc.c')]+[HERE.parent/'forge/capture.c']
+        factory += [NES/'src/fm1_volume.c',NES/'src/fm1_audio_queue.c']
+        sources += factory;speed_sources.update(factory)
     if a.mdx:
         mdx=HERE.parent/'mdx'
         includes=['-I'+str(mdx/n) for n in ('include','vendor/retrofm','vendor/mdxtools')]+includes
@@ -224,12 +262,21 @@ def main():
         overlays[str(original)]=hashlib.sha256(original.read_bytes()).hexdigest()
     for name,transform in (('cdc.c',vendor_overlay.cdc),('usb_device.c',vendor_overlay.device),('msd_upgrade.c',vendor_overlay.boot_entry)):
         original=SDK/'apps/common/usb/device'/name
-        target=out/('fm1-'+name);target.write_text(transform(original.read_text(encoding='utf-8')),encoding='utf-8')
+        target=out/('fm1-'+name)
+        original_text=original.read_text(encoding='utf-8')
+        if a.factory_diag and name=='usb_device.c':transformed=transform(original_text,composite=usb_audio,video=a.forge_uvc)
+        elif a.factory_diag and name=='cdc.c':transformed=transform(original_text,composite=True)
+        else:transformed=transform(original_text)
+        target.write_text(transformed,encoding='utf-8')
         sources.append(target);overlays[str(original)]=hashlib.sha256(original.read_bytes()).hexdigest()
     for source,name in ((SDK/'cpu/wl82/sdk_ld.c','sdk.ld'),(SDK/'cpu/wl82/sdk_used_list.c','sdk.used')):
         run([TC/'clang.exe',*flags,*defines,*includes,'-D__LD__','-E','-P',source,'-o',out/name])
     used=out/'sdk.used';used.write_text(used.read_text()+'\nmemory_init\nfm1_usb_task\ncdc_read_data\ncdc_write_data\nfm1_cdc_ready\nfm1_diag_feed\nfm1_usb_device_descriptor\nfm1_usb_config_descriptor\n')
     used.write_text(used.read_text()+'fm1_usb_rx_irq\ngo_mask_usb_updata\nnvram_set_boot_state\n')
+    if a.factory_diag:used.write_text(used.read_text()+'fm1_forge_usb_command\nfm1_forge_render\nfm1_forge_clock_prepare\nfm1_forge_hal_access\nfm1_wl82_keyscan_async_raw\nfm1_usb_packet_write\nfm1_peripheral_usb_audio_quiesce\n')
+    if a.forge_user_module:used.write_text(used.read_text()+'fm1_forge_user_module\n')
+    if usb_audio:used.write_text(used.read_text()+'fm1_usb_audio_dac\nfm1_usb_audio_stop\nfm1_uac_desc_config\nfm1_uac_descriptor\n')
+    if a.forge_uvc:used.write_text(used.read_text()+'fm1_uvc_setup_init\nfm1_uvc_desc_config\nfm1_uvc_setup_filter\nfm1_uvc_capture_stop\nfm1_uvc_get_status\nfm1_uvc_video_descriptor\nfm1_forge_capture_step\nfm1_forge_capture_packet\nusb_device_mode\n')
     if a.mdx:used.write_text(used.read_text()+'fm1_mdx_load\nfm1_mdx_render\nfm1_mdx_usb_command\nfm1_wl82_keyscan_async_raw\n')
     if a.mod:used.write_text(used.read_text()+'fm1_mod_open\nfm1_mod_render\nfm1_mod_usb_command\nfm1_wl82_keyscan_async_raw\n')
     if a.nes_smb1:used.write_text(used.read_text()+'fm1_board_run\nfm1_display_write\nfm1_audio_startup_process24\nfm1_nes_run\n')
@@ -260,7 +307,7 @@ def main():
     app=out/'fm1-usb-diag.app.bin';app.write_bytes(b''.join(parts))
     (out/'symbols.txt').write_text(run([TC/'llvm-nm.exe','-n','-S',elf]))
     (out/'disassembly.asm').write_text(run([TC/'llvm-objdump.exe','-d','-mcpu=r3',elf]))
-    report=audit(elf.read_bytes(),app.read_bytes(),usb_only=True,usb_peripheral_tests=a.peripheral_tests,usb_nes=a.nes_smb1,usb_mdx=a.mdx,usb_mod=a.mod,rom='smb1' if a.nes_smb1 else 'rom50',require_boot_trace=True,require_board_power=True)
+    report=audit(elf.read_bytes(),app.read_bytes(),usb_only=True,usb_peripheral_tests=a.peripheral_tests,usb_nes=a.nes_smb1,usb_mdx=a.mdx,usb_mod=a.mod,usb_audio=usb_audio,usb_video=a.forge_uvc,factory_diag=a.factory_diag,factory_user_module=bool(a.forge_user_module),factory_clock=a.forge_clock,factory_hal_access=hal_access if a.factory_diag else None,rom='smb1' if a.nes_smb1 else 'rom50',require_boot_trace=True,require_board_power=True)
     (out/'static-audit.json').write_text(json.dumps(report,indent=2)+'\n')
     result={'status':'LINKED_USB_DIAGNOSTIC_UNTESTED','flashable':False,'usb_controller_candidate':a.controller,
             'controller_routing_verified':False,'sdk_commit':SDK_PIN,'application_bytes':app.stat().st_size,
@@ -268,6 +315,12 @@ def main():
             'update_transport':'CDC verify-only; not stored or installed','flash_commit':'BLOCKED_STOCK_LAYOUT_UNQUALIFIED',
             'device_operations_performed':False,'static_audit':report,'power_evidence':power,
             'peripheral_tests':a.peripheral_tests,'serial_uboot':'implemented; transition not hardware-qualified',
+            'factory_diag':a.factory_diag,'factory_schema':1 if a.factory_diag else None,'usb_audio':usb_audio,
+            'usb_video':a.forge_uvc,'forge_uvc':a.forge_uvc,
+            'factory_user_module':bool(a.forge_user_module),'forge_user_module':str(a.forge_user_module.resolve()) if a.forge_user_module else None,
+            'forge_project_schema':3 if a.factory_diag else None,'forge_hal_access':hal_access if a.factory_diag else None,
+            'forge_hal_access_scope':'user module callbacks and snapshot; fixed diagnostics/recovery drivers remain active' if a.factory_diag else None,
+            'asset_free':a.factory_diag,'external_media_required':False if a.factory_diag else None,
             'nes_smb1':a.nes_smb1,'cartridge_sha256':ROMS['smb1'][2] if a.nes_smb1 else None,
             'mdx':a.mdx,'mdx_upload_storage':'192KiB RAM, volatile' if a.mdx else None,
             'mod':a.mod,'mod_song_storage':'256KiB editable RAM, plus read-only embedded boot song' if a.mod_default_song else ('256KiB RAM, volatile' if a.mod else None),
@@ -285,18 +338,18 @@ def main():
             'nes_profile':a.nes_profile,
             'nes_tiles':a.nes_tiles,
             'nes_volume':a.nes_volume,
-            'lcd_async':a.lcd_async,
+            'lcd_async':a.lcd_async,'forge_clock':a.forge_clock if a.factory_diag else None,'forge_lcd':a.forge_lcd if a.factory_diag else None,
             'lcd_spi15':a.lcd_spi15,
             'lcd_spi30':a.lcd_spi30,
             'lcd_rgb444':a.lcd_rgb444,
             'lcd_direct':a.lcd_direct,
-            'keyscan_dma2':a.keyscan_dma2 or a.mdx or a.mod,
-            'keyscan_irq':a.keyscan_irq or a.mdx or a.mod,
-            'keyscan_paced':a.keyscan_paced or a.mdx or a.mod,
+            'keyscan_dma2':a.keyscan_dma2 or a.mdx or a.mod or a.factory_diag,
+            'keyscan_irq':a.keyscan_irq or a.mdx or a.mod or a.factory_diag,
+            'keyscan_paced':a.keyscan_paced or a.mdx or a.mod or a.factory_diag,
             'nes_no_keys':a.nes_no_keys,
             'nes_input_recovery':a.nes_input_recovery,
             'speed_optimization':{'level':'-O2','sources':sorted(str(s) for s in speed_sources)},
-            'encoder_scanner':'1ms paced scan, completed-snapshot capture before replacement, lossless bounded backlog, four edges per detent; hardware retest pending' if a.mod else '250us semaphore-wakeup, stock stable-two filter; hardware retest pending',
+            'encoder_scanner':'1ms paced scan, completed-snapshot capture before replacement, lossless bounded backlog, four edges per detent; hardware retest pending' if a.mod or a.factory_diag else '250us semaphore-wakeup, stock stable-two filter; hardware retest pending',
             'lcd_test':'stock-pa2-gpio-dma40-sequence' if a.lcd_stock_sequence else ('stock-dma-params-registers' if a.lcd_stock_dma else ('stock-window-continuous-white' if a.lcd_stock_fill else 'row-addressed-rgb')),
             'vendor_overlay_sources':overlays,
             'source_sha256':{str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in sources+list(HERE.glob('*.h'))+list(HERE.glob('*.py'))+
@@ -313,6 +366,22 @@ def main():
             inputs=[a.mod_bank.resolve(),mod_tools/'tools/fm1_bank.py']
             result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in inputs})
         result['profile']='MOD_EDITOR_CANDIDATE'
+    if a.factory_diag:
+        result['profile']='FM1_FORGE_FACTORY_DIAG_V1'
+        result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for folder in (HERE.parent/'forge',HERE.parent/'usb-audio') for s in folder.glob('*.h')})
+        result['source_sha256'][str(NES/'audit_usb_packet.py')]=hashlib.sha256((NES/'audit_usb_packet.py').read_bytes()).hexdigest()
+        provenance=[HERE.parent/'usb-audio'/n for n in ('PROVENANCE.md','SOURCE_ORIGIN.json')]+[HERE.parents[1]/'licenses/fm1-mdx-GPL-3.0.txt',HERE.parent/'forge/config.schema.json']+list((HERE.parent/'forge').glob('*.py'))
+        result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in provenance})
+        if a.forge_user_module:
+            module_folder=a.forge_user_module.resolve().parent
+            module_inputs=list(module_folder.glob('*.h'))
+            if (module_folder/'forge.json').is_file():module_inputs.append(module_folder/'forge.json')
+            result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in module_inputs})
+        result['usb_audio_contract']={'enabled':usb_audio,'class':'UAC1' if usb_audio else None,'sample_rate':48000 if usb_audio else None,'bits':16 if usb_audio else None,'channels':2 if usb_audio else None,'dac_rate':44100,'capture':'diagnostic synthesizer before analog master volume' if usb_audio else None,'microphone':False}
+        if a.forge_uvc:
+            video=HERE.parent/'usb-video'
+            result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in list(video.glob('*.h'))+[video/'SOURCE_ORIGIN.json',video/'README.md']})
+            result['usb_video_contract']={'enabled':True,'class':'UVC1.0','width':256,'height':240,'pixel_format':'YUY2','frame_rate':5,'frame_bytes':122880,'payload_bytes':640,'max_packet_bytes':642,'endpoint':'0x84','vc_interface':5 if usb_audio else 2,'vs_interface':6 if usb_audio else 3,'status_endpoint':False,'usb_controller':0,'high_speed':False,'full_framebuffer':False,'heap_allocation':False,'defines':['FM1_USB_VIDEO=1','FM1_UVC_IPAD_PAD=1'],'static_memory':report['usb_video_memory'],'producer':'frozen Forge ABI frame, foreground two-row strips; hidden user globals remain live','source_origin':'Keitark/fm1 fb677ea095a28fba3b4b8b8fe91cc3deeb0278d5','hardware_accepted':False,'audio_under_load_accepted':False}
     manifest.write_text(json.dumps(result,indent=2)+'\n');log.close()
     print(json.dumps({k:v for k,v in result.items() if k not in ('static_audit','source_sha256','archive_sha256','power_evidence','vendor_overlay_sources')},indent=2))
 

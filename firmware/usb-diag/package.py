@@ -23,7 +23,7 @@ def main():
     image,report=pack.build_candidate(raw,elf,app,require_peripherals=False,usb_only=True,
                                     usb_peripheral_tests=manifest.get('peripheral_tests',False),
                                     usb_mdx=manifest.get('mdx',False),
-                                    usb_mod=manifest.get('mod',False),
+                                    usb_mod=manifest.get('mod',False),usb_audio=manifest.get('usb_audio',False),usb_video=manifest.get('usb_video',False),factory_diag=manifest.get('factory_diag',False),factory_user_module=manifest.get('factory_user_module',False),factory_clock=manifest.get('forge_clock','sdk-default'),factory_hal_access=manifest.get('forge_hal_access') if manifest.get('factory_diag') else None,factory_project_schema=manifest.get('forge_project_schema',1) if manifest.get('factory_diag') else 1,
                                     usb_nes=manifest.get('nes_smb1',False),rom='smb1' if manifest.get('nes_smb1') else 'rom50')
     out=ROOT/'private-backups/usb-diag-candidates'/report['candidate_sha256']
     out.mkdir(parents=True,exist_ok=True)
@@ -35,6 +35,7 @@ def main():
                    'nes_smb1':manifest.get('nes_smb1',False),
                    'mdx':manifest.get('mdx',False),
                    'mod':manifest.get('mod',False),
+                   'factory_diag':manifest.get('factory_diag',False),'usb_audio':manifest.get('usb_audio',False),'usb_video':manifest.get('usb_video',False),
                    'lcd_test':manifest.get('lcd_test','row-addressed-rgb'),
                    'serial_uboot':'implemented; transition not hardware-qualified',
                    'update_commit':'BLOCKED: stock layout has no app_dir_head2',
@@ -47,6 +48,23 @@ def main():
     if manifest.get('peripheral_tests'):
         report['unverified']+=['LCD picture','DAC output and audible tone','physical key map',
                                'encoder identity/direction and fast rotation','serial UBOOT transition after peripheral shutdown']
+    if manifest.get('factory_diag'):
+        report['install_transport']='existing audited CDC to UBOOT, or already UBOOT, through the reviewed local session writer'
+        report['direct_cdc_commit']=False
+        report['unverified']=[item for item in report['unverified'] if item!='safe CDC flash writer - not implemented']
+        report['unverified'].append('physical install and complete readback through the reviewed local session writer')
+        if manifest.get('usb_audio'):
+            report['unverified'].append('USB Audio class enumeration, capture and playback')
+        report['usb_audio_contract']=manifest['usb_audio_contract']
+        report['factory_schema']=manifest['factory_schema']
+        report['factory_user_module']=manifest['factory_user_module']
+        report['forge_project_schema']=manifest.get('forge_project_schema',1)
+        report['forge_hal_access']=manifest.get('forge_hal_access')
+        if manifest.get('usb_video'):
+            report['usb_video_contract']=manifest['usb_video_contract']
+            report['unverified']+=['Forge UVC enumeration and complete changing host frames','simultaneous UVC/UAC delivery and audio quality under load','video close/reopen, USB reset and UBOOT teardown']
+        report['asset_free']=True
+        report['external_media_required']=False
     (out/'package-report.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps({'image':str(target),'bytes':len(image),'sha256':report['candidate_sha256'],
                       'application_bytes':len(app),'preservation_checks':report['checks'],

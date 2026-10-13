@@ -4,6 +4,12 @@
 #include "usb/device/usb_stack.h"
 #include "rx_channel.h"
 #include "boot_entry.h"
+#ifdef FM1_USB_AUDIO
+#include "target.h"
+#endif
+#if defined(FM1_USB_AUDIO) || defined(FM1_FORGE)
+#include "peripherals.h"
+#endif
 
 extern int fm1_cdc_ready(usb_dev id);
 extern volatile unsigned fm1_cdc_generation;
@@ -31,6 +37,12 @@ void fm1_usb_rx_irq(struct usb_device_t *device) {
     if(!fm1_cdc_ready(id))return;
     if(n>sizeof(bytes)) {channel.fault=1;channel.armed=0;return;}
     if(fm1_rx_receive(&channel,bytes,n,timer_get_ms())) {
+#ifdef FM1_USB_AUDIO
+        /* Confirmed entry only: no task/allocation/SDK close in USB IRQ. */
+        fm1_usb_audio_stop();fm1_peripheral_usb_audio_quiesce();
+#elif defined(FM1_FORGE)
+        fm1_peripheral_usb_audio_quiesce();
+#endif
         go_mask_usb_updata();
         for(;;) {} /* SDK entry must not return to the running application. */
     }
@@ -41,6 +53,7 @@ unsigned fm1_usb_rx_take(uint8_t *out, unsigned limit) {
     consumed_generation=channel.generation; local_irq_enable();
     return n;
 }
+__attribute__((noinline,used))
 int fm1_usb_boot_arm(void) {
     int ok;
     local_irq_disable(); sync_channel();

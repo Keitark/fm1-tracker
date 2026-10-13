@@ -26,10 +26,16 @@ import threading
 from typing import Any
 from urllib.parse import urlsplit
 import uuid
+import secrets
+import time
+import webbrowser
+
+from remote_catalog import _plain_path, MAX_SET_BYTES
 
 
 FIRMWARE_SIZE = 0x100000
 MAX_BODY = 1_500_000
+IMPORT_TTL = 300
 DEFAULT_PORT = 9770
 READ_TIMEOUT = 10
 ID_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
@@ -212,10 +218,13 @@ class JobManager:
         self._worker: threading.Thread | None = None
         self._closed = False
         self._storage_fault = False
+        self._import_tokens = {}
         try:
             self.jobs_dir = self.state_dir / "jobs"
             self.jobs_dir.mkdir(mode=0o700, exist_ok=True)
             self._load_jobs()
+            self.library_launches_dir = _plain_path(self.state_dir / 'library-launches')
+            self.library_launches_dir.mkdir(mode=0o700, exist_ok=True)
         except BaseException:
             self._state_lock.close()
             raise
@@ -406,13 +415,14 @@ class JobManager:
             raise BridgeError(503, "local status snapshot is unavailable") from None
 
     def catalog(self) -> dict[str, Any]:
-        try:
-            catalog = self.backend.catalog()
-            if not isinstance(catalog, dict):
-                raise TypeError("invalid catalog")
-            return _copy_json(_without_images(catalog))
-        except Exception:
-            raise BridgeError(503, "local application catalog is unavailable") from None
+        with self._mutex:
+            try:
+                catalog = self.backend.catalog()
+                if not isinstance(catalog, dict):
+                    raise TypeError("invalid catalog")
+                return _copy_json(_without_images(catalog))
+            except Exception:
+                raise BridgeError(503, "local application catalog is unavailable") from None
 
     def install_catalog(self, bundle: Any) -> dict[str, Any]:
         if not isinstance(bundle, dict) or set(bundle) != {
@@ -439,6 +449,115 @@ class JobManager:
                 raise BridgeError(400, "catalog bundle was rejected by local validation") from None
             except Exception:
                 raise BridgeError(503, "local application catalog installation failed") from None
+
+    def _launch_record(self, ident):
+        path = _plain_path(self.library_launches_dir / (ident + '.json'))
+        if not path.exists():
+            raise BridgeError(404, 'local import launch receipt not found')
+        try:
+            if not path.is_file() or path.stat().st_size > 2048:
+                raise ValueError('invalid receipt')
+            record = json.loads(path.read_text(encoding='utf-8'))
+            if (type(record) is not dict or set(record) != {'id', 'status', 'created', 'expires'}
+                    or record['id'] != ident or record['status'] not in {'launching', 'opened', 'failed', 'unknown'}
+                    or type(record['created']) not in (int, float)
+                    or type(record['expires']) not in (int, float)
+                    or record['expires'] != record['created'] + IMPORT_TTL):
+                raise ValueError('invalid receipt')
+            return record
+        except (OSError, ValueError, TypeError):
+            raise BridgeError(503, 'local import launch receipt is unavailable') from None
+
+    @staticmethod
+    def _public_launch(record):
+        remaining = max(0, min(IMPORT_TTL, int(record['expires'] - time.time())))
+        result = {'id': record['id'], 'opened': record['status'] == 'opened',
+                  'device_io': False, 'expires_in': remaining}
+        if record['status'] in {'launching', 'unknown'}:
+            result['error'] = 'local_import_launch_unknown'
+        elif record['status'] == 'failed':
+            result['error'] = 'local_import_launch_failed'
+        elif not remaining:
+            result['error'] = 'local_import_session_expired'
+        return result
+
+    def library_launch(self, ident):
+        if not _valid_id(ident):
+            raise BridgeError(404, 'local import launch receipt not found')
+        with self._mutex:
+            return self._public_launch(self._launch_record(ident))
+
+    def open_library(self, body, port):
+        if type(body) is not dict or set(body) != {'id'} or not _valid_id(body['id']):
+            raise BridgeError(400, 'local import launch requires one 32-character id')
+        with self._mutex:
+            try:
+                return self._public_launch(self._launch_record(body['id']))
+            except BridgeError as error:
+                if error.status != 404:
+                    raise
+            if self._closed:
+                raise BridgeError(503, 'bridge is shutting down')
+            if self._active is not None:
+                raise BridgeError(409, 'another operation is active')
+            if self._storage_fault:
+                raise BridgeError(503, 'bridge state storage failed; service restart is required')
+            now = time.time()
+            self._import_tokens = {key: value for key, value in self._import_tokens.items()
+                                   if value['expires'] > now and not value['used']}
+            if len(self._import_tokens) >= 32:
+                raise BridgeError(429, 'too many pending local import sessions')
+            record = {'id': body['id'], 'status': 'launching', 'created': now, 'expires': now + IMPORT_TTL}
+            path = _plain_path(self.library_launches_dir / (body['id'] + '.json'))
+            # Persist intent before invoking the browser. A process crash or an
+            # ambiguous launcher exception can never cause an automatic reopen.
+            _atomic_json(path, record)
+            scoped = secrets.token_urlsafe(32)
+            self._import_tokens[scoped] = {'expires': record['expires'], 'used': False}
+            try:
+                opened = webbrowser.open('http://127.0.0.1:' + str(port) + '/library-import#' + scoped,
+                                         new=2, autoraise=True)
+                record['status'] = 'opened' if opened is True else 'failed'
+                if opened is not True:
+                    self._import_tokens.pop(scoped, None)
+            except Exception:
+                record['status'] = 'unknown'
+            try:
+                _atomic_json(path, record)
+            except Exception:
+                # The durable launching record remains an uncertain receipt.
+                raise BridgeError(503, 'local import launch outcome could not be saved; do not retry with a new id') from None
+            return self._public_launch(record)
+
+    def check_import_token(self, token):
+        with self._mutex:
+            grant = self._import_tokens.get(token)
+            if grant is None or grant['used'] or grant['expires'] <= time.time():
+                raise BridgeError(401, 'local import session expired or already used')
+
+    def install_library_set(self, body, import_token=None):
+        if type(body) is not dict or set(body) != {'name', 'bundles'}:
+            raise BridgeError(400, 'local set requires only name and bundles')
+        with self._mutex:
+            if import_token is not None:
+                self.check_import_token(import_token)
+            if self._closed:
+                raise BridgeError(503, 'bridge is shutting down')
+            if self._active is not None:
+                raise BridgeError(409, 'another operation is active')
+            if self._storage_fault:
+                raise BridgeError(503, 'bridge state storage failed; service restart is required')
+            try:
+                result = self.backend.install_library_set(body['name'], body['bundles'])
+                if type(result) is not dict or result.get('device_io') is not False:
+                    raise TypeError('invalid local set installation result')
+                if import_token is not None:
+                    self._import_tokens[import_token]['used'] = True
+                return _copy_json(_without_images(result))
+            except (ValueError, TypeError, KeyError):
+                raise BridgeError(400, 'local set was rejected by validation; no device I/O') from None
+            except Exception:
+                raise BridgeError(503, 'local set installation failed; inspect the library before retrying') from None
 
     @staticmethod
     def _artifact(value: Any) -> bytes:
@@ -550,11 +669,23 @@ def make_server(manager: JobManager, token: str, port: int = DEFAULT_PORT) -> Th
             self.close_connection = True
             self.wfile.write(payload)
 
-        def _send_store(self) -> None:
+        def _send_store(self, importer=False) -> None:
             try:
-                payload = Path(__file__).with_name("remote_store.html").read_bytes()
+                payload = Path(__file__).with_name("remote_library.html" if importer else "remote_store.html").read_bytes()
             except OSError:
                 raise BridgeError(404, "store interface is unavailable") from None
+            if importer:
+                script = re.search(br'<script>(.*?)</script>', payload, re.S)
+                if script is None:
+                    raise BridgeError(503, 'local import interface is unavailable')
+                script_hash = base64.b64encode(hashlib.sha256(script.group(1)).digest()).decode('ascii')
+                policy = ("default-src 'none'; script-src 'sha256-" + script_hash + "'; "
+                          "connect-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'; "
+                          "base-uri 'none'; form-action 'none'; object-src 'none'")
+            else:
+                policy = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                          "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; "
+                          "base-uri 'none'; form-action 'self'")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
@@ -562,22 +693,32 @@ def make_server(manager: JobManager, token: str, port: int = DEFAULT_PORT) -> Th
             self.send_header("Connection", "close")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header(
-                "Content-Security-Policy",
-                "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-                "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; "
-                "base-uri 'none'; form-action 'self'",
-            )
+            if importer:
+                self.send_header('Cross-Origin-Resource-Policy', 'same-origin')
+            self.send_header('Content-Security-Policy', policy)
             self.end_headers()
             self.close_connection = True
             self.wfile.write(payload)
 
-        def _authenticate(self) -> None:
+        def _authenticate(self, import_allowed=False):
             headers = self.headers.get_all("Authorization") or []
             expected = "Bearer " + token
-            if (len(headers) != 1 or not headers[0].isascii()
-                    or not hmac.compare_digest(headers[0], expected)):
+            if len(headers) != 1 or not headers[0].isascii():
                 raise BridgeError(401, "authentication required")
+            if hmac.compare_digest(headers[0], expected):
+                return None
+            if import_allowed and headers[0].startswith('Bearer '):
+                scoped = headers[0][7:]
+                manager.check_import_token(scoped)
+                return scoped
+            raise BridgeError(401, "authentication required")
+
+        def _same_origin(self):
+            origins = self.headers.get_all('Origin') or []
+            if origins and origins != ['http://127.0.0.1:' + str(self.server.server_port)]:
+                raise BridgeError(403, 'local import requires the loopback origin')
+            if self.headers.get('Sec-Fetch-Site') in {'cross-site', 'same-site'}:
+                raise BridgeError(403, 'local import requires the loopback origin')
 
         def _path(self) -> str:
             parsed = urlsplit(self.path)
@@ -587,14 +728,17 @@ def make_server(manager: JobManager, token: str, port: int = DEFAULT_PORT) -> Th
 
         def _dispatch(self, method: str) -> None:
             try:
-                if method == "GET" and self.path == "/":
+                if method == "GET" and self.path in {"/", "/library-import"}:
                     if (self.headers.get("Transfer-Encoding") is not None
                             or self.headers.get_all("Content-Length") not in (None, ["0"])):
                         raise BridgeError(400, "GET requests must not contain a body")
-                    self._send_store()
+                    self._send_store(importer=self.path == '/library-import')
                     return
-                self._authenticate()
                 path = self._path()
+                is_import = method == 'POST' and path == '/v1/library/sets'
+                if path in {'/v1/library/sets', '/v1/library/open'}:
+                    self._same_origin()
+                import_token = self._authenticate(import_allowed=is_import)
                 if method == "GET":
                     if self.headers.get("Transfer-Encoding") is not None:
                         raise BridgeError(400, "Transfer-Encoding is not supported")
@@ -608,6 +752,8 @@ def make_server(manager: JobManager, token: str, port: int = DEFAULT_PORT) -> Th
                     elif path == "/v1/baseline":
                         self._send_artifact(manager.baseline())
                         return
+                    elif re.fullmatch(r'/v1/library/open/[0-9a-f]{32}', path):
+                        data = manager.library_launch(path.rsplit('/', 1)[1])
                     else:
                         match = re.fullmatch(r"/v1/jobs/([0-9a-f]{32})(/firmware)?", path)
                         if match is None:
@@ -620,7 +766,7 @@ def make_server(manager: JobManager, token: str, port: int = DEFAULT_PORT) -> Th
                     return
                 if method != "POST":
                     raise BridgeError(405, "method not supported")
-                if path not in {"/v1/jobs", "/v1/catalog"}:
+                if path not in {"/v1/jobs", "/v1/catalog", '/v1/library/open', '/v1/library/sets'}:
                     raise BridgeError(404, "endpoint not found")
                 if self.headers.get("Transfer-Encoding") is not None:
                     raise BridgeError(400, "Transfer-Encoding is not supported")
@@ -628,10 +774,11 @@ def make_server(manager: JobManager, token: str, port: int = DEFAULT_PORT) -> Th
                 if len(lengths) != 1 or re.fullmatch(r"[0-9]+", lengths[0]) is None:
                     raise BridgeError(411, "a single valid Content-Length is required")
                 canonical_length = lengths[0].lstrip("0") or "0"
-                if len(canonical_length) > len(str(MAX_BODY)):
+                body_limit = MAX_SET_BYTES if path == '/v1/library/sets' else MAX_BODY
+                if len(canonical_length) > len(str(body_limit)):
                     raise BridgeError(413, "request body is too large")
                 length = int(canonical_length)
-                if length > MAX_BODY:
+                if length > body_limit:
                     raise BridgeError(413, "request body is too large")
                 if length == 0:
                     raise BridgeError(400, "JSON request body is required")
@@ -653,6 +800,10 @@ def make_server(manager: JobManager, token: str, port: int = DEFAULT_PORT) -> Th
                     raise BridgeError(400, "invalid JSON body") from None
                 if path == "/v1/jobs":
                     self._send_json(202, {"ok": True, "data": manager.submit(body)})
+                elif path == '/v1/library/open':
+                    self._send_json(200, {'ok': True, 'data': manager.open_library(body, self.server.server_port)})
+                elif path == '/v1/library/sets':
+                    self._send_json(201, {'ok': True, 'data': manager.install_library_set(body, import_token)})
                 else:
                     self._send_json(201, {"ok": True, "data": manager.install_catalog(body)})
             except BridgeError as exc:

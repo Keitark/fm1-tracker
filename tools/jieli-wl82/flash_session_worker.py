@@ -433,8 +433,38 @@ def doom_status_progress(transcript):
     return active[0], active[-1], any(values['key_error'] for values in counters)
 
 
+def forge_status_values(transcript):
+    """Strict bounded diagnostics: keys are hex; counters and fault fields decimal."""
+    required={'ready','running','pending','frames','audio_frames','scans','keys','lcd','fault','input_errors','adc_errors'}
+    samples=[]
+    for line in transcript.splitlines(keepends=True):
+        if not line.startswith('FORGE STATUS ') or not line.endswith('\n'):continue
+        tokens=line.strip().split()[2:]
+        fields={}
+        for token in tokens:
+            match=re.fullmatch(r'([a-z_]+)=(-?[0-9]+|[0-9a-fA-F]{16})',token)
+            require(match is not None,'Incomplete factory status')
+            name,raw=match.groups();require(name not in fields,'Duplicate factory status field')
+            if name=='keys':require(re.fullmatch(r'[0-9a-fA-F]{16}',raw) is not None,'Invalid factory key mask');fields[name]=int(raw,16)
+            else:require(re.fullmatch(r'-?[0-9]+',raw) is not None,'Invalid factory decimal status');fields[name]=int(raw)
+        require(set(fields)==required,'Incomplete factory status')
+        require(all(fields[n] in (0,1) for n in ('ready','running','pending')) and all(fields[n]>=0 for n in ('frames','audio_frames','scans','input_errors','adc_errors')),'Invalid factory status value')
+        samples.append(fields)
+    require(samples,'Factory status missing')
+    return samples
+
+
+def forge_status_progress(transcript):
+    samples=forge_status_values(transcript)
+    require(all(s['ready']==1 and s['running']==1 and s['pending']==0 for s in samples),'Factory diagnostics not running')
+    require(not any(s[n] for s in samples for n in ('lcd','fault','input_errors','adc_errors')),'Factory firmware/peripheral error reported')
+    require(len(samples)>=2 and all(samples[-1][n]>samples[0][n] for n in ('frames','audio_frames','scans')),'Factory LCD/audio/input progress not confirmed')
+    return samples[0],samples[-1]
+
+
 def live_status_samples(transcript, profile):
     """Parse diagnostics without imposing post-flash boot/idle predicates."""
+    if profile=='FM1-FORGE/1':return forge_status_values(transcript)
     rules = {
         'DOOM-FM1/1': ('DOOM STATUS ', {'stage', 'fault', 'frames', 'stopped', 'lcd_stage',
                                      'lcd_error', 'key_error', 'sys_hz', 'lsb_hz'}),
@@ -483,16 +513,19 @@ def serial_action(op, run):
                 reply = capture(port, 1)
                 transcript += reply
                 doom_profile = 'FM1DIAG/1 DOOM-FM1/1 UBOOT=SERIAL COMMIT=BLOCKED' in reply.splitlines()
+                forge_profile = 'FM1DIAG/1 FM1-FORGE/1 UBOOT=SERIAL COMMIT=BLOCKED' in reply.splitlines()
                 if 'FM1DIAG/1' in reply and (re.search(r'\bNES=(?:SMB1|INES)\b',reply) or
                                            'MDX-KARAOKE/1 RAM-UPLOAD UBOOT=SERIAL COMMIT=BLOCKED' in reply or
                                            'MOD-EDITOR/1 RAM-TRANSFER UBOOT=SERIAL COMMIT=BLOCKED' in reply or
-                                           doom_profile):
+                                           doom_profile or forge_profile):
                     break
             else:
                 raise ValueError('FM-1 serial HELLO not confirmed')
             if op == 'serial_status':
                 require(len(transcript) <= 65536, 'Live serial transcript exceeded bound')
-                if doom_profile:
+                if forge_profile:
+                    profile, command = 'FM1-FORGE/1','FORGE STATUS'
+                elif doom_profile:
                     profile, command = 'DOOM-FM1/1', 'DOOM STATUS'
                 elif 'MOD-EDITOR/1 RAM-TRANSFER' in reply:
                     profile, command = 'MOD-EDITOR/1', 'MOD STATUS'
@@ -513,6 +546,18 @@ def serial_action(op, run):
                         'samples': live_status_samples(observation, profile),
                         'transcript': transcript, 'diagnostic_only': True, 'boot_verified': False}
             if op == 'observe':
+                if forge_profile:
+                    observation=''
+                    for _ in range(4):
+                        port.write(b'FORGE STATUS\n');port.flush()
+                        status=capture(port,1);observation+=status;transcript+=status
+                    first,last=forge_status_progress(observation)
+                    return {'serial_hello_verified':True,'profile':'FM1-FORGE/1','port':name,
+                            'frames_first':first['frames'],'frames_last':last['frames'],
+                            'audio_frames_first':first['audio_frames'],'audio_frames_last':last['audio_frames'],
+                            'scans_first':first['scans'],'scans_last':last['scans'],
+                            'physical_display_audio_input_verified':False,'usb_audio_verified':False,
+                            'note':'Serial diagnostics counters only; physical inputs/LCD/audio and USB Audio Class remain bench checks.'}
                 if doom_profile:
                     observation = ''
                     for _ in range(4):
@@ -575,7 +620,15 @@ def serial_action(op, run):
                         'frames_first': frames[0], 'frames_last': frames[-1],
                         'physical_display_audio_verified': False,
                         'note': 'Serial capture only; inspect counters and physical screen/audio.'}
-            if doom_profile:
+            if forge_profile:
+                port.write(b'FORGE STOP\n');port.flush();transcript+=capture(port,.7)
+                for _ in range(6):
+                    port.write(b'FORGE STATUS\n');port.flush()
+                    status=capture(port,.7);transcript+=status
+                    samples=forge_status_values(status)
+                    if samples[-1]['running']==0 and samples[-1]['pending']==0:break
+                else:raise ValueError('Factory diagnostics not confirmed stopped')
+            elif doom_profile:
                 port.write(b'DOOM STOP\n'); port.flush()
                 status = capture(port, 2); transcript += status
                 for _ in range(6):

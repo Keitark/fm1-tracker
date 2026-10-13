@@ -117,6 +117,9 @@ class WindowsBackend:
     def install_catalog(self, bundle):
         return self.packages.install(bundle)
 
+    def install_library_set(self, name, bundles):
+        return self.packages.install_set(name, bundles)
+
     def execute(self, operation, request=None, loader_state=None, catalog_id=None, entry_method=None):
         if operation == 'plan_app':
             if request is not None or loader_state is not None or entry_method is not None:
@@ -231,7 +234,7 @@ class WindowsBackend:
         if final.get('blocked') or final.get('needs_observation') or final.get('reset_pending'):
             return {'ok': False, 'error': 'Write/readback completed but startup remains unverified', 'data': {'steps': steps}}
         live = call('serial_status')
-        expected = {'nes': 'NES', 'doom': 'DOOM-FM1/1', 'mdx': 'MDX-KARAOKE/1',
+        expected = {'diagnostics': 'FM1-FORGE/1', 'nes': 'NES', 'doom': 'DOOM-FM1/1', 'mdx': 'MDX-KARAOKE/1',
                     'buddha': 'MOD-EDITOR/1', 'protracker': 'MOD-EDITOR/1'}[bundle['profile']]
         profile = live.get('data', {}).get('result', {}).get('profile')
         # Match the actual HELLO identifier, never infer success from an app card.

@@ -19,7 +19,7 @@ import flash_session_worker as worker
 import prepare_flash_request
 import remote_catalog
 
-PROFILES = ('nes', 'doom', 'mdx', 'buddha', 'protracker')
+PROFILES = ('nes', 'doom', 'mdx', 'buddha', 'protracker','diagnostics')
 
 
 def require(test, message):
@@ -63,7 +63,9 @@ def check_freshness(manifest, doom=False):
 
 
 def check_profile(profile, manifest):
-    if profile == 'doom':
+    if profile == 'diagnostics':
+        require(manifest.get('factory_diag') is True and type(manifest.get('factory_schema')) is int and manifest.get('factory_schema')==1 and manifest.get('profile')=='FM1_FORGE_FACTORY_DIAG_V1' and manifest.get('asset_free') is True and manifest.get('external_media_required') is False and not any(manifest.get(n) for n in ('nes_smb1','mod','mdx')),'Selected build is not the explicit asset-free factory profile')
+    elif profile == 'doom':
         require(manifest.get('status') == 'uboot_app_input_ready_unflashed' and
                 manifest.get('uboot_app_input_ready') is True, 'Build is not an audited Doom candidate')
     elif profile in ('protracker', 'buddha'):

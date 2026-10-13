@@ -14,6 +14,9 @@ static void startup_step(fm1_audio_startup *s) {
         else if(s->gain_q7>target)--s->gain_q7;
     }
 }
+#if defined(FM1_FORGE) && !defined(_MSC_VER)
+__attribute__((noinline,used))
+#endif
 void fm1_audio_startup_process24(fm1_audio_startup *s,int32_t stereo[128]) {
     unsigned i;
     /* FM-1_010 0x020051ce and RAM 0x01c04b2c..0x01c04b5e.
