@@ -11,6 +11,9 @@
 #ifdef FM1_USB_AUDIO
 #include "target.h"
 #endif
+#ifdef FM1_USB_VIDEO
+#include "fm1_uvc.h"
+#endif
 #ifdef FM1_FORGE
 #include "forge_target.h"
 #endif
@@ -148,6 +151,9 @@ void app_main(void) {
 #endif
 #ifdef FM1_USB_AUDIO
     fm1_usb_audio_init();
+#endif
+#ifdef FM1_USB_VIDEO
+    fm1_uvc_setup_init(); /* Exactly once, before worker and USB attachment. */
 #endif
 #ifdef FM1_PERIPHERAL_TESTS
     /* A failed optional worker must not remove serial recovery. TEST STATUS

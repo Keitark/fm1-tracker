@@ -19,12 +19,21 @@ static char replies[4096];
 static unsigned diagnostic_renders,usb_audio_blocks;
 unsigned test_irq_disabled;
 static fm1_forge_frame diagnostic_frame;
+#ifdef FM1_USB_VIDEO
+static fm1_uvc_stream video_stream;
+static unsigned video_active=1,video_shutdown,video_packets;
+void fm1_uvc_setup_init(void){fm1_uvc_init(&video_stream);fm1_uvc_start(&video_stream,0);video_active=1;}
+fm1_uvc_stream *fm1_uvc_stream_get(void){CHECK(test_irq_disabled);return &video_stream;}
+int fm1_uvc_capture_enabled(void){CHECK(test_irq_disabled);return video_active;}
+void fm1_uvc_capture_stop(void){video_active=0;video_shutdown=1;fm1_uvc_stop(&video_stream);}
+int fm1_uvc_get_status(fm1_uvc_status *s){memset(s,0,sizeof(*s));s->active=video_active;s->shutdown=video_shutdown;s->packets_sent=video_stream.stats.packets_sent;return 1;}
+#endif
 #ifdef FM1_FORGE_USER_MODULE
 extern unsigned test_module_inits,test_module_updates,test_module_renders,test_module_audio,test_module_stops;
 extern fm1_forge_input test_module_update_input;
 extern fm1_forge_frame test_module_render_frame;
 #endif
-int test_diagnostic_render(const fm1_forge_frame *frame,unsigned y,unsigned rows,uint8_t *wire,unsigned bpp){diagnostic_renders++;diagnostic_frame=*frame;return fm1_forge_render(frame,y,rows,wire,bpp);}
+int test_diagnostic_render(const fm1_forge_frame *frame,unsigned y,unsigned rows,uint8_t *wire,unsigned bpp){CHECK(!test_irq_disabled);diagnostic_renders++;diagnostic_frame=*frame;return fm1_forge_render(frame,y,rows,wire,bpp);}
 static void check_user_input(const fm1_forge_input *input){unsigned i;
 #if defined(FM1_FORGE_USER_MODULE) && !FM1_FORGE_HAL_BUTTONS
     CHECK(!input->keys && !input->seen && input->last_key==255);
@@ -96,7 +105,13 @@ void fm1_usb_audio_transport_status(char *out,size_t n){snprintf(out,n,"USB TRAN
 #endif
 void os_time_dly(int ticks){
     if(quiescent){CHECK(!running && !pending && !scan_enabled && !audio_enabled && !timer_cb && !dac_cb && !scanner.running && !volume.running);CHECK(closes==1 && lcd_stops==1);CHECK(benchmark_published.state==FM1_FORGE_BENCH_CANCELLED && !benchmark_request);longjmp(end,1);}
-    CHECK(ticks==1);ms+=10;turn++;
+#ifdef FM1_USB_VIDEO
+    CHECK(ticks==0);
+    {fm1_uvc_read packet;while(fm1_uvc_acquire(&video_stream,&packet)==FM1_UVC_OK){CHECK(fm1_uvc_commit(&video_stream,&packet,1)==FM1_UVC_OK);video_packets++;}}
+#else
+    CHECK(ticks==1);
+#endif
+    ms+=10;turn++;
     if(timer_cb)timer_cb(0);if(irqs[37] && scan_enabled)irqs[37]();if(irqs[11] && audio_enabled)irqs[11]();
     if(turn==7){replies[0]=0;CHECK(fm1_forge_usb_command("FORGE BENCH",ms,reply,0));CHECK(strstr(replies,"state=idle done=0"));
         CHECK(fm1_forge_usb_command("FORGE BENCH START",ms,reply,0));CHECK(benchmark_request==1);
@@ -173,9 +188,18 @@ static void check_clock_guards(void){
 }
 int main(void){
     check_clock_guards();
+#ifdef FM1_USB_VIDEO
+    fm1_uvc_setup_init();
+#endif
     CHECK(!fm1_peripheral_start_task() && task && !fm1_peripheral_idle());
     replies[0]=0;CHECK(fm1_forge_usb_command("FORGE BENCH START",ms,reply,0));CHECK(strstr(replies,"ERROR FORGE BENCH unavailable"));replies[0]=0;
     if(!setjmp(end))task(0);CHECK(fm1_peripheral_idle());
+#ifdef FM1_USB_VIDEO
+    CHECK(video_shutdown && !video_active && video_packets>0 && !video_stream.active);
+    {uint32_t packets=video_packets;fm1_forge_frame next={0};fm1_forge_capture_step(&next,ms);
+        CHECK(!fm1_forge_video_capture.valid && video_packets==packets);}
+    CHECK(fm1_forge_usb_command("FORGE VIDEO",ms,reply,0));CHECK(strstr(replies,"shutdown=1"));
+#endif
     CHECK(fm1_forge_usb_command("FORGE STATUS",ms,reply,0));CHECK(strstr(replies,"running=0 pending=0"));
 #ifdef FM1_USB_AUDIO
     CHECK(uac_stops==1 && usb_audio_blocks>0);

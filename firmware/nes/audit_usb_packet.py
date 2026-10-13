@@ -11,7 +11,7 @@ CALLS=((0x30,6,'__local_irq_disable'),(0x38,4,'usb_id2device'),
 # Short two-byte calls retain exact encodings and checked target distances.
 SHORT={0x5c:(bytes.fromhex('41 8f'),-226),0x8c:(bytes.fromhex('41 85'),-246)}
 
-def audit_usb_packet(symbols,code_at,composite=True):
+def audit_usb_packet(symbols,code_at,composite=True,video=False):
     def require(ok,msg):
         if not ok:raise ValueError('USB packet '+msg)
     require('fm1_usb_packet_write' in symbols,'commit missing')
@@ -24,6 +24,23 @@ def audit_usb_packet(symbols,code_at,composite=True):
        (0x68,6,'memmove'),(0x8a,2,'usb_write_txcsr'),(0x8e,6,'__local_irq_enable'))
     short=SHORT if composite else {0x5a:(bytes.fromhex('41 90'),-224),0x8a:(bytes.fromhex('41 86'),-244)}
     digest=BODY_SHA256 if composite else '132aa8a42844f92fa65336381fc28eb82e7be54304967425bed0a76f4ad905a0'
+    if video:
+        # packet.c is unchanged and still permits only EP1/192 or EP3/<64.
+        # The additional EP4 adapter shares SDK register helpers, so LTO no
+        # longer emits the legacy short-call layout. These two complete
+        # normalized bodies were reviewed from the optional-UVC links; keep
+        # the existing no-video whitelist intact. In particular the bounds,
+        # epoch/DMA checks, exact EP1/3 doorbells, csync and ICFG restore stay
+        # fully hashed. Only independently target-checked calls are normalized.
+        calls=((0x30,6,'__local_irq_disable'),(0x38,4,'usb_id2device'),
+               (0x48,2,'usb_read_txcsr'),(0x5a,2,'usb_get_dma_taddr'),
+               (0x68,6,'memmove'),(0x8a,4,'usb_write_txcsr'),(0x90,6,'__local_irq_enable')) if composite else (
+               (0x30,6,'__local_irq_disable'),(0x38,4,'usb_id2device'),
+               (0x46,2,'usb_read_txcsr'),(0x58,2,'usb_get_dma_taddr'),
+               (0x66,6,'memmove'),(0x88,4,'usb_write_txcsr'),(0x8e,6,'__local_irq_enable'))
+        short={0x48:(bytes.fromhex('41 96'),-212),0x5a:(bytes.fromhex('61 84'),-120)} if composite else {
+               0x46:(bytes.fromhex('51 80'),-192),0x58:(bytes.fromhex('61 85'),-118)}
+        digest='f2cb5c8ded832160dc2da1b496711b0340a6d1108245684f7e3f2bc83a36e5a8' if composite else '4d4a58736a7ef962d042a75151cd4afda4338edf87f8f12a061dbb7badaf399b'
     body=bytearray(code_at(start,size))
     for off,n,name in calls:
         require(name in symbols,'dependency missing: '+name)

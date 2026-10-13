@@ -31,29 +31,51 @@ class FactoryTests(unittest.TestCase):
             rejected=[{'forge_project_schema':2},{'forge_project_schema':2,'forge_hal_access':None},{'forge_project_schema':2,'forge_hal_access':{}},{'forge_project_schema':2,'forge_hal_access':{'buttons':True}},{'forge_project_schema':2,'forge_hal_access':dict(selection,audio=1)},{'forge_project_schema':2,'forge_hal_access':dict(selection,gpio=True)},{'forge_project_schema':1,'forge_hal_access':None},{'forge_project_schema':None},{'forge_project_schema':True},{'forge_project_schema':3}]
             for fields in rejected:
                 path.write_text(json.dumps(dict(manifest,**fields)))
-                with self.subTest(fields=fields),patch.object(pack,'build_candidate') as build,self.assertRaisesRegex(ValueError,'factory.*(schema|HAL)|schema2'):
+                with self.subTest(fields=fields),patch.object(pack,'build_candidate') as build,self.assertRaisesRegex(ValueError,'factory.*(schema|HAL)|schema[23]'):
                     producer.prepare(root,worker.sha(base),base)
                 build.assert_not_called()
-            for fields in ({},{'forge_project_schema':1},{'forge_project_schema':2,'forge_hal_access':selection}):
+            for fields in ({},{'forge_project_schema':1},{'forge_project_schema':2,'forge_hal_access':selection},{'forge_project_schema':3,'forge_hal_access':selection},{'forge_project_schema':3,'forge_hal_access':selection,'usb_video':True}):
                 path.write_text(json.dumps(dict(manifest,**fields)))
                 with self.subTest(fields=fields),patch.object(pack,'build_candidate',return_value=(base,{'candidate_sha256':worker.sha(base)})) as build:
                     result=producer.prepare(root,worker.sha(base),base)
                     self.assertEqual(result['sha256'],worker.sha(base))
                     self.assertEqual(build.call_args.kwargs['factory_project_schema'],fields.get('forge_project_schema',1))
                     self.assertEqual(build.call_args.kwargs['factory_hal_access'],fields.get('forge_hal_access'))
+                    self.assertEqual(build.call_args.kwargs['usb_video'],fields.get('usb_video',False))
     def test_direct_packaging_v2_requires_selection_before_elf_audit(self):
         selection=dict.fromkeys(('buttons','encoders','volume','lcd','audio'),True)
         for hal in (None,{},dict(selection,volume='false')):
             with self.subTest(hal=hal),patch.object(pack,'audit') as audit,self.assertRaisesRegex(ValueError,'HAL access'):
                 pack.build_candidate(b'',b'',b'',factory_diag=True,factory_project_schema=2,factory_hal_access=hal)
             audit.assert_not_called()
-        for version in (None,True,3):
+        for version in (None,True,4):
             with self.subTest(version=version),self.assertRaisesRegex(ValueError,'project schema'):
                 pack.build_candidate(b'',b'',b'',factory_diag=True,factory_project_schema=version,factory_hal_access=selection)
-        for version,hal in ((1,None),(2,selection)):
+        for version,hal in ((1,None),(2,selection),(3,selection)):
             with self.subTest(version=version),patch.object(pack,'audit',side_effect=RuntimeError('reached ELF audit')) as audit,self.assertRaisesRegex(RuntimeError,'reached ELF audit'):
                 pack.build_candidate(b'',b'',b'',factory_diag=True,factory_project_schema=version,factory_hal_access=hal)
             self.assertEqual(audit.call_args.kwargs['factory_hal_access'],hal)
+    def test_uvc_requires_boolean_flag_and_schema3_before_packaging(self):
+        selection=dict.fromkeys(('buttons','encoders','volume','lcd','audio'),True)
+        for schema,video in ((1,True),(2,True),(3,1),(3,'true')):
+            with self.subTest(schema=schema,video=video),patch.object(pack,'audit') as audit,self.assertRaisesRegex(ValueError,'UVC'):
+                pack.build_candidate(b'',b'',b'',factory_diag=True,factory_project_schema=schema,factory_hal_access=selection,usb_video=video)
+            audit.assert_not_called()
+        with patch.object(pack,'audit',side_effect=RuntimeError('reached ELF audit')) as audit,self.assertRaisesRegex(RuntimeError,'reached ELF audit'):
+            pack.build_candidate(b'',b'',b'',factory_diag=True,factory_project_schema=3,factory_hal_access=selection,usb_video=True)
+        self.assertTrue(audit.call_args.kwargs['usb_video'])
+    def test_request_uvc_rejects_invalid_profile_flag_and_keeps_baseline_gate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);selection=dict.fromkeys(('buttons','encoders','volume','lcd','audio'),True)
+            manifest=dict(status='LINKED_USB_DIAGNOSTIC_UNTESTED',factory_diag=True,factory_schema=1,profile='FM1_FORGE_FACTORY_DIAG_V1',asset_free=True,external_media_required=False,peripheral_tests=True,usb_audio=True,nes_smb1=False,mdx=False,mod=False,forge_project_schema=3,forge_hal_access=selection,usb_video=True)
+            path=root/'build-manifest.json'
+            for changes in ({'usb_video':1},{'usb_video':'true'},{'forge_project_schema':2},{'forge_project_schema':1},{'factory_diag':False,'usb_audio':False}):
+                path.write_text(json.dumps(dict(manifest,**changes)))
+                with self.subTest(changes=changes),patch.object(pack,'build_candidate') as build,self.assertRaisesRegex(ValueError,'USB video'):
+                    producer.prepare(root,'0'*64)
+                build.assert_not_called()
+            path.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError,'exact verified'):producer.prepare(root,'0'*64)
     def test_fresh_baseline_profile_and_no_media_are_required(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);source=root/'user.c';source.write_text('/* source */')

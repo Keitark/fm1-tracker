@@ -24,6 +24,10 @@
 #ifdef FM1_USB_AUDIO
 #include "target.h"
 #endif
+#ifdef FM1_USB_VIDEO
+#include "fm1_uvc.h"
+#include "capture.h"
+#endif
 #include <stdio.h>
 #include <string.h>
 #ifndef FM1_FORGE_BOOT_CLOCK_HZ
@@ -54,6 +58,14 @@ static unsigned clock_prepared;
 static int key_error,lcd_error,audio_error,clock_error;
 const uint8_t fm1_forge_hal_access[5] __attribute__((used))={FM1_FORGE_HAL_BUTTONS,FM1_FORGE_HAL_ENCODERS,FM1_FORGE_HAL_VOLUME,FM1_FORGE_HAL_LCD,FM1_FORGE_HAL_AUDIO};
 static uint8_t strip[8u*FM1_LCD_WIRE_ROW_BYTES];
+#ifdef FM1_USB_VIDEO
+#ifdef FM1_FORGE_HOST
+#define FORGE_VIDEO_SCRATCH
+#else
+#define FORGE_VIDEO_SCRATCH __attribute__((section(".memp_memory_x"),aligned(4),used))
+#endif
+static fm1_forge_capture fm1_forge_video_capture FORGE_VIDEO_SCRATCH;
+#endif
 static unsigned take(spinlock_t *l){unsigned f;local_irq_save(f);arch_spin_lock(l);return f;}
 static void release(spinlock_t *l,unsigned f){arch_spin_unlock(l);local_irq_restore(f);}
 static uint32_t now_us(void *u){(void)u;return timer_get_ms()*1000u;}
@@ -129,6 +141,9 @@ void fm1_forge_hal_snapshot(fm1_forge_input *out){unsigned f;if(!out)return;f=ta
 /* IRQ-safe final guard; normal FORGE STOP performs full task teardown first.
  * No waits, logging, allocation or synchronous LCD transfers here. */
 __attribute__((noinline,used)) void fm1_peripheral_usb_audio_quiesce(void){unsigned f;
+#ifdef FM1_USB_VIDEO
+    fm1_uvc_capture_stop(); /* STOP/confirmed UBOOT permanently latch video off. */
+#endif
     bit_clr_ie(IRQ_ALNK_IDX,0);bit_clr_ie(IRQ_SPI2_IDX,0);
     f=take(&audio_lock);audio_enabled=0;fm1_forge_voice_init(&voice);release(&audio_lock,f);
     f=take(&input_lock);scan_enabled=0;fm1_volume_stop(&volume);release(&input_lock,f);
@@ -160,8 +175,40 @@ int fm1_peripheral_request(unsigned command,unsigned generation){(void)generatio
 int fm1_peripheral_event(char *out,unsigned size){(void)out;(void)size;return 0;}
 __attribute__((noinline,used)) void fm1_display_snapshot(unsigned phase,const uint32_t *r){(void)phase;(void)r;}
 static void snapshot(fm1_forge_frame *out){unsigned f=take(&control_lock);*out=published;release(&control_lock,f);}
+#ifdef FM1_USB_VIDEO
+/* Foreground-only, bounded to one packet (at most two RGB rows). The copied
+ * Forge ABI frame remains fixed across all packets of this accepted frame. */
+__attribute__((noinline,used)) static void fm1_forge_capture_step(const fm1_forge_frame *frame,uint32_t now){
+    fm1_uvc_stream *stream;fm1_uvc_write write;unsigned f;int begin,reserved,converted;
+    fm1_forge_capture_renderer render=0;
+    local_irq_save(f);
+    if(!fm1_uvc_capture_enabled() || !(stream=fm1_uvc_stream_get())){
+        local_irq_restore(f);fm1_forge_capture_cancel(&fm1_forge_video_capture);return;}
+    begin=fm1_uvc_begin_frame(stream,now);reserved=fm1_uvc_reserve_bytes(stream,now,&write);
+    local_irq_restore(f);
+    if(begin==FM1_UVC_OK){fm1_forge_frame frozen=*frame;user_input(&frozen.input,&frame->input);
+#if defined(FM1_FORGE_USER_MODULE) && !FM1_FORGE_HAL_BUTTONS
+        frozen.note=FM1_FORGE_NO_NOTE;
+#endif
+        fm1_forge_capture_accept(&fm1_forge_video_capture,&frozen);}
+    if(reserved!=FM1_UVC_OK)return;
+#if defined(FM1_FORGE_USER_MODULE) && FM1_FORGE_HAL_LCD
+    render=fm1_forge_user_module.render;
+#endif
+    converted=fm1_forge_capture_packet(&fm1_forge_video_capture,&write,render);
+    now=timer_get_ms();local_irq_save(f);
+    if(converted==FM1_UVC_OK)(void)fm1_uvc_publish_bytes(stream,now,&write);
+    else (void)fm1_uvc_cancel_bytes(stream,now,&write);
+    local_irq_restore(f);
+}
+#endif
 int fm1_forge_usb_command(const char *s,uint32_t now,fm1_forge_reply reply,void *ctx){
     fm1_forge_frame p;unsigned a,r,q,f;char line[224];(void)now;
+#ifdef FM1_USB_VIDEO
+    if(!strcmp(s,"FORGE VIDEO") || !strcmp(s,"USB VIDEO STATUS")){fm1_uvc_status v;
+        if(fm1_uvc_get_status(&v)){snprintf(line,sizeof(line),"USB VIDEO active=%lu cfg=%lu commit=%lu alt=%lu shutdown=%lu started=%lu sent=%lu dropped=%lu packets=%lu retries=%lu backpressure=%lu\n",
+            (unsigned long)v.active,(unsigned long)v.configured,(unsigned long)v.committed,(unsigned long)v.alt,(unsigned long)v.shutdown,(unsigned long)v.frames_started,(unsigned long)v.frames_sent,(unsigned long)v.frames_dropped,(unsigned long)v.packets_sent,(unsigned long)v.retries,(unsigned long)v.backpressure);reply(ctx,line);}return 1;}
+#endif
     if(strcmp(s,"FORGE STATUS") && strcmp(s,"FORGE INPUT") && strcmp(s,"FORGE AUDIO") && strcmp(s,"FORGE LCD") && strcmp(s,"FORGE CLOCK") && strcmp(s,"FORGE MODULE") && strcmp(s,"FORGE STOP") && strcmp(s,"HAL GET") && strcmp(s,"FORGE HELP") && strcmp(s,"FORGE BENCH") && strcmp(s,"FORGE BENCH STATUS") && strcmp(s,"FORGE BENCH START") && strcmp(s,"FORGE BENCH CANCEL"))return 0;
     if(!strcmp(s,"FORGE STOP")){fm1_peripheral_cancel();reply(ctx,"OK FORGE STOP REQUESTED\n");return 1;}
     if(!strcmp(s,"FORGE HELP")){reply(ctx,"FORGE STATUS INPUT AUDIO LCD CLOCK MODULE STOP; BENCH START|STATUS|CANCEL; HAL GET\n");return 1;}
@@ -201,6 +248,9 @@ __attribute__((noinline,used)) static void fm1_forge_task(void *unused){
     struct iis_platform_data pd;fm1_forge_frame frame={0},view={0};uint32_t last_ui=0,last_fps=0,fps_count=0;unsigned y=240;
     int32_t previous_note=255;unsigned f,retries=0;uint32_t retry_at=0;(void)unused;
     fm1_forge_controls_init(&controls);fm1_forge_voice_init(&voice);fm1_audio_startup_reset(&envelope);
+#ifdef FM1_USB_VIDEO
+    fm1_forge_capture_init(&fm1_forge_video_capture);
+#endif
 #ifdef FM1_FORGE_USER_MODULE
     if(fm1_forge_user_module.abi!=FM1_FORGE_ABI)audio_error=-90;
     else if(fm1_forge_user_module.init)fm1_forge_user_module.init();
@@ -264,6 +314,9 @@ __attribute__((noinline,used)) static void fm1_forge_task(void *unused){
 #endif
                 rc=fm1_display_async_wire_rows(y,8,strip,sizeof(strip));if(rc<0)lcd_error=rc;else y+=8;built++;}}}
         frame.fault=(int16_t)(clock_error?clock_error:audio_error?audio_error:key_error?key_error:lcd_error);
+#ifdef FM1_USB_VIDEO
+        fm1_forge_capture_step(&frame,timer_get_ms()); /* LCD work goes first. */
+#endif
         {unsigned request;uint32_t ticks;
             f=take(&control_lock);request=benchmark_request;benchmark_request=0;release(&control_lock,f);
             ticks=benchmark_clock(0);
@@ -274,7 +327,12 @@ __attribute__((noinline,used)) static void fm1_forge_task(void *unused){
             fm1_forge_bench_step(&benchmark,benchmark_clock,0);
             f=take(&control_lock);benchmark_published=benchmark;release(&control_lock,f);
         }
-        f=take(&control_lock);published=frame;release(&control_lock,f);wdt_clear();os_time_dly(1);
+        f=take(&control_lock);published=frame;release(&control_lock,f);wdt_clear();
+#ifdef FM1_USB_VIDEO
+        os_time_dly(0); /* ProTracker's bounded yield; no 10 ms producer sleep. */
+#else
+        os_time_dly(1);
+#endif
     }
 }
 int fm1_peripheral_start_task(void){int rc;available=running=pending=quiescent=0;benchmark_request=0;fm1_forge_bench_init(&benchmark);benchmark_published=benchmark;rc=task_create(fm1_forge_task,0,"#C0peripheral");

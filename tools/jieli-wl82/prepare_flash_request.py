@@ -16,8 +16,11 @@ def prepare(folder, baseline_sha256, baseline=None):
     mod = manifest.get('status') == 'LINKED_USB_DIAGNOSTIC_UNTESTED' and manifest.get('mod') is True
     factory = manifest.get('factory_diag') is True
     usb_audio = manifest.get('usb_audio', False)
+    usb_video = manifest.get('usb_video', False)
     if type(usb_audio) is not bool or (usb_audio and not (mdx or factory)):
         raise ValueError('Composite audio requires an explicit MDX or factory build profile')
+    if type(usb_video) is not bool or (usb_video and (not factory or manifest.get('forge_project_schema')!=3)):
+        raise ValueError('USB video requires an explicit Forge project schema3')
     sys.path.insert(0, str(ROOT / 'firmware/nes'))
     import build_stock_image as pack
     if factory:
@@ -51,7 +54,7 @@ def prepare(folder, baseline_sha256, baseline=None):
     image, report = pack.build_candidate(pack.V14_BACKUP.read_bytes(), elf, app,
         require_peripherals=False, usb_only=True, usb_peripheral_tests=True,
         usb_nes=not (mdx or mod or factory), usb_mdx=mdx, usb_mod=mod,factory_diag=factory,factory_user_module=manifest.get('factory_user_module',False),
-        usb_audio=usb_audio, factory_clock=manifest.get('forge_clock','sdk-default'),factory_hal_access=manifest.get('forge_hal_access') if factory else None,factory_project_schema=manifest.get('forge_project_schema',1) if factory else 1, rom='rom50' if mod or factory else 'smb1')
+        usb_audio=usb_audio,usb_video=usb_video, factory_clock=manifest.get('forge_clock','sdk-default'),factory_hal_access=manifest.get('forge_hal_access') if factory else None,factory_project_schema=manifest.get('forge_project_schema',1) if factory else 1, rom='rom50' if mod or factory else 'smb1')
     if mod or factory:
         for start,end in ((0,0x4000),(0x4040,0x4120),(0x4120+584956,0x100000)):
             if image[start:end] != baseline[start:end]:

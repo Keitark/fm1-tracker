@@ -39,7 +39,7 @@ class Projects(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'sdk-320 requires stock-dma'):command(p,p/'output')
     def test_contract_rejects_unknown_or_unfixed_usb(self):
         base=defaults('starter','Starter')
-        for field,value in (('clockPreset','sdk-396'),('module','doom'),('schemaVersion',3),('schemaVersion',True),('goal','unversioned')):
+        for field,value in (('clockPreset','sdk-396'),('module','doom'),('schemaVersion',4),('schemaVersion',True),('goal','unversioned')):
             c=copy.deepcopy(base);c[field]=value
             with self.assertRaises(ValueError):validate(c)
         for field in ('cdc','uboot'):
@@ -49,16 +49,51 @@ class Projects(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             p=create(t,'diagnostic');args=command(p,p/'out')
             self.assertNotIn('--forge-user-module',args);self.assertNotIn('--forge-no-uac',args)
-            self.assertEqual(json.loads((p/'forge.json').read_text())['schemaVersion'],2)
+            self.assertNotIn('--forge-uvc',args)
+            self.assertEqual(json.loads((p/'forge.json').read_text())['schemaVersion'],3)
             for name in HALS:self.assertEqual(args[args.index('--forge-hal-'+name)+1],'1')
     def test_legacy_is_strict_and_normalized_without_mutation(self):
-        base=defaults('starter','Starter');base.pop('hal');base['schemaVersion']=1
+        base=defaults('starter','Starter');base.pop('hal');base['usb'].pop('uvc');base['schemaVersion']=1
         original=copy.deepcopy(base);normalized=validate(base)
-        self.assertEqual(base,original);self.assertEqual(normalized['schemaVersion'],2)
+        self.assertEqual(base,original);self.assertEqual(normalized['schemaVersion'],3)
         self.assertEqual(normalized['hal'],dict.fromkeys(HALS,True))
+        self.assertFalse(normalized['usb']['uvc'])
         normalized['usb']['uac']=False;self.assertTrue(base['usb']['uac'])
         base['hal']=dict.fromkeys(HALS,True)
         with self.assertRaises(ValueError):validate(base)
+    def test_v2_import_preserves_hal_and_disables_uvc_without_mutation(self):
+        base=defaults('starter','Starter');base['schemaVersion']=2;base['usb'].pop('uvc');base['hal']['lcd']=False;base['hal']['audio']=False;base['usb']['uac']=False
+        original=copy.deepcopy(base);normalized=validate(base)
+        self.assertEqual(base,original);self.assertEqual(normalized['schemaVersion'],3)
+        self.assertEqual(normalized['hal'],base['hal']);self.assertFalse(normalized['usb']['uvc']);self.assertFalse(normalized['usb']['uac'])
+        normalized['hal']['lcd']=True;self.assertFalse(base['hal']['lcd'])
+        base['usb']['uvc']=False
+        with self.assertRaises(ValueError):validate(base)
+    def test_uvc_is_optional_off_and_only_selected_true_reaches_builder(self):
+        with tempfile.TemporaryDirectory() as t:
+            p=create(t,'starter');base=defaults('starter','Starter')
+            self.assertFalse(base['usb']['uvc'])
+            for enabled in (False,True):
+                c=copy.deepcopy(base);c['usb']['uvc']=enabled;c['hal']['lcd']=False
+                (p/'forge.json').write_text(json.dumps(c));args=command(p,p/'out')
+                self.assertEqual('--forge-uvc' in args,enabled)
+                self.assertNotIn('--forge-no-uac',args);self.assertEqual(args[args.index('--forge-hal-lcd')+1],'0')
+                self.assertEqual(validate(json.loads(json.dumps(c))),c)
+            for version in (1,2):
+                c=copy.deepcopy(base);c['schemaVersion']=version;c['usb'].pop('uvc')
+                if version==1:c.pop('hal')
+                (p/'forge.json').write_text(json.dumps(c));self.assertNotIn('--forge-uvc',command(p,p/'out'))
+    def test_uvc_contract_rejects_unknown_legacy_fields_and_non_booleans(self):
+        base=defaults('starter','Starter')
+        for value in (None,0,1,'false',{},[]):
+            c=copy.deepcopy(base);c['usb']['uvc']=value
+            with self.subTest(value=value),self.assertRaises(ValueError):validate(c)
+        c=copy.deepcopy(base);c['usb'].pop('uvc')
+        with self.assertRaises(ValueError):validate(c)
+        for version in (1,2):
+            c=copy.deepcopy(base);c['schemaVersion']=version
+            if version==1:c.pop('hal')
+            with self.assertRaises(ValueError):validate(c)
     def test_each_hal_selection_reaches_builder_with_uac_independent(self):
         with tempfile.TemporaryDirectory() as t:
             p=create(t,'starter');base=defaults('starter','Starter');base['module']='user'

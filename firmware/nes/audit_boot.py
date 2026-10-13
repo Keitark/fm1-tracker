@@ -20,10 +20,11 @@ def require(condition,message):
     if not condition: raise ValueError(message)
 
 
-def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,require_boot_trace=False,require_board_power=False,require_screen_first=False,usb_only=False,usb_peripheral_tests=False,usb_nes=False,usb_mdx=False,usb_audio=False,usb_mod=False,factory_diag=False,factory_user_module=False,factory_clock='sdk-default',factory_hal_access=None):
+def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,require_boot_trace=False,require_board_power=False,require_screen_first=False,usb_only=False,usb_peripheral_tests=False,usb_nes=False,usb_mdx=False,usb_audio=False,usb_mod=False,factory_diag=False,factory_user_module=False,factory_clock='sdk-default',factory_hal_access=None,usb_video=False):
     require(not usb_audio or usb_mdx or factory_diag,'Composite audio requires an explicit MDX or factory profile')
     require(not factory_diag or (usb_only and usb_peripheral_tests and not (usb_nes or usb_mdx or usb_mod)),'Factory profile must be asset-free CDC peripheral diagnostics')
     require(not factory_user_module or factory_diag,'User module requires explicit factory profile')
+    require(type(usb_video) is bool and (not usb_video or factory_diag),'USB video requires the explicit Forge factory profile')
     if factory_hal_access is not None:
         require(factory_diag and isinstance(factory_hal_access,dict) and set(factory_hal_access)=={'buttons','encoders','volume','lcd','audio'} and all(type(v) is bool for v in factory_hal_access.values()),'Invalid factory HAL access selection')
     require(not usb_nes or (usb_only and usb_peripheral_tests and rom=='smb1'),'NES CDC requires explicit SMB1 peripheral profile')
@@ -365,7 +366,7 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
         for name in ('cdc_read_data','cdc_write_data','fm1_cdc_ready','fm1_usb_dma','fm1_diag_feed'):
             require(name in symbols,'Missing USB diagnostic '+name)
         descriptor=bytes((18,1,0,2,2,2,1,64,0x54,0x36,0x55,0x51,0,2,1,2,0,1))
-        if usb_audio:descriptor=bytes((18,1,0,2,0xef,2,1,64,0x54,0x36,0x55,0x51,3,2,1,2,0,1))
+        if usb_audio or usb_video:descriptor=bytes((18,1,0,2,0xef,2,1,64,0x54,0x36,0x55,0x51,3,2,1,2,0,1))
         if usb_audio:
             for name in ('fm1_uac_desc_config','fm1_usb_audio_dac','fm1_usb_audio_stop','fm1_uac_descriptor','fm1_uac_dma'):
                 require(name in symbols,'Missing composite audio component '+name)
@@ -376,7 +377,10 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
                     '820961a648e4bf17faa19a3bdd788f7a70205ff0600b5fbb35c069deb7219d8d',
                     'UAC1 interface/terminal/format/endpoint descriptor changed')
         if factory_diag:
-            audit_usb_packet(symbols,code_at,composite=usb_audio)
+            if not usb_video:
+                for name in ('fm1_uvc_state','fm1_uvc_dma','fm1_uvc_desc_config'):
+                    require(name not in symbols,'Non-video factory links UVC '+name)
+            audit_usb_packet(symbols,code_at,composite=usb_audio,video=usb_video)
             for name in ('cartridge','player','song','upload','fm1_demo_mdx','fm1_demo_pdx','fm1_mod_open','fm1_mdx_load'):
                 require(name not in symbols,'Factory contains media/player component '+name)
             for name in ('fm1_forge_usb_command','fm1_forge_render','fm1_forge_clock_prepare','fm1_peripheral_usb_audio_quiesce'):
@@ -418,8 +422,59 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             reboot=calls_to('fm1_usb_rx_irq','go_mask_usb_updata')
             require(len(quiet)==len(reboot)==1 and quiet[0]<reboot[0],'Confirmed factory UBOOT DMA teardown changed')
             require(not calls_to('fm1_usb_boot_arm','fm1_peripheral_usb_audio_quiesce'),'UBOOT arm must not prematurely stop factory audio')
+            if usb_video:
+                for name in ('fm1_uvc_setup_init','fm1_uvc_desc_config','fm1_uvc_setup_filter','fm1_uvc_capture_stop','fm1_uvc_get_status','fm1_uvc_video_descriptor','fm1_uvc_state','fm1_uvc_dma','fm1_uvc_control_state','fm1_forge_video_capture','fm1_forge_capture_step','fm1_forge_capture_packet'):
+                    require(name in symbols,'Missing Forge UVC component '+name)
+                for name in ('uvc_register','uvc_open','uvc_alloc','uvc_malloc'):
+                    require(name not in symbols,'Forge UVC must not link stock camera allocation '+name)
+                vc=5 if usb_audio else 2;vs=vc+1
+                def le16(n):return struct.pack('<H',n)
+                def le32(n):return struct.pack('<I',n)
+                expected_video=(bytes((8,11,vc,2,14,3,0,0,9,4,vc,0,0,14,1,0,0,13,36,1))+
+                    le16(0x100)+le16(40)+le32(1000)+bytes((1,vs,18,36,2,1))+le16(0x201)+
+                    bytes((0,0))+le16(0)*3+bytes((3,0,0,0,9,36,3,2))+le16(0x101)+
+                    bytes((0,1,0,9,4,vs,0,0,14,2,0,0,14,36,1,1))+le16(77)+
+                    bytes((0x84,0,2,0,0,0,1,0,27,36,4,1,1))+bytes.fromhex('5955593200001000800000aa00389b71')+
+                    bytes((16,1,0,0,0,0,30,36,5,1,0))+le16(256)+le16(240)+
+                    le32(4915200)*2+le32(122880)+le32(2000000)+bytes((1,))+le32(2000000)+
+                    bytes((6,36,13,4,4,4,9,4,vs,1,1,14,2,0,0,7,5,0x84,1))+le16(642)+bytes((1,)))
+                require(len(expected_video)==159 and symbols['fm1_uvc_video_descriptor'][1]==159 and
+                    code_at(value('fm1_uvc_video_descriptor'),159)==expected_video,'Forge UVC descriptor/numbering/mode changed')
+                dma,dma_bytes,_=symbols['fm1_uvc_dma']
+                require(dma_bytes==1024 and dma%64==0 and bss[3]<=dma and dma+dma_bytes<=bss[3]+bss[5],
+                    'Forge UVC DMA size/alignment/SRAM placement changed')
+                require(symbols['fm1_uvc_state'][1]==2068,'Forge UVC three-packet queue layout changed')
+                require(symbols['fm1_uvc_control_state'][1]==64,'Forge UVC control storage changed')
+                require(1024<symbols['fm1_forge_video_capture'][1]<=1280,'Forge UVC snapshot/two-row storage changed')
+                for name in ('fm1_uvc_state','fm1_uvc_control_state','fm1_forge_video_capture'):
+                    address,size,_=symbols[name];cache=sections['.cache_ram_bss']
+                    require(cache[3]<=address and address+size<=cache[3]+cache[5], 'Forge UVC CPU scratch outside cache SRAM: '+name)
+                init=calls_to('app_task_handler','fm1_uvc_setup_init')
+                require(len(init)==1 and all(off>init[0] for off in starts),'Forge UVC must initialize once before worker/USB attachment')
+                steps=calls_to('fm1_forge_task','fm1_forge_capture_step')
+                lcd=calls_to('fm1_forge_task','fm1_display_async_wire_rows')
+                require(len(steps)==1 and len(lcd)==1 and steps[0]>lcd[0],'Forge UVC producer must follow foreground LCD packed-wire work')
+                require(len(calls_to('fm1_peripheral_usb_audio_quiesce','fm1_uvc_capture_stop'))==1,
+                    'Forge UVC STOP/UBOOT permanent teardown changed')
+                require(len(calls_to('usb_device_mode','fm1_uvc_capture_stop'))==1,'Forge UVC USB device teardown changed')
+                require(len(calls_to('filter','fm1_uvc_setup_filter'))==1,'Forge UVC setup sieve missing')
+                # Filled only after reviewing the linked policy for each unchanged
+                # compiler/profile; the legacy audio-only hash stays pinned below.
+                # Normalize only verified relocatable calls; all whitelist/
+                # stall operands remain pinned, including endpoint direction.
+                policy=bytearray(code_at(value('filter'),symbols['filter'][1]))
+                for target in ('fm1_uvc_setup_filter','usb_set_setup_phase'):
+                    hits=calls_to('filter',target)
+                    require(len(hits)==1 and policy[hits[0]]&0xc0==0x80 and policy[hits[0]+1]==0xea,
+                        'Forge UVC setup policy call changed: '+target)
+                    policy[hits[0]:hits[0]+4]=bytes(4)
+                expected_policy='fd4085e3642bd61688785eae4c92842d384d8f9dbc6d4632d630b4fb449d2ebc' if usb_audio else '07dfa722bdbd843a14c017450425eef7a76fd7537b0e60c54ab38074e200e816'
+                require(hashlib.sha256(policy).hexdigest()==expected_policy,'Forge UVC setup policy instructions changed')
+            else:
+                for name in ('fm1_uvc_state','fm1_uvc_dma','fm1_uvc_desc_config'):
+                    require(name not in symbols,'Non-video factory links UVC '+name)
             if usb_audio:
-                require('filter' in symbols and symbols['filter'][1]==74 and hashlib.sha256(code_at(value('filter'),74)).hexdigest()=='8aefdb7c31f5e456688d6564c9d5cf5829ba370ab62d40375a21fa020ecd8078','Composite USB setup policy instructions changed')
+                if not usb_video:require('filter' in symbols and symbols['filter'][1]==74 and hashlib.sha256(code_at(value('filter'),74)).hexdigest()=='8aefdb7c31f5e456688d6564c9d5cf5829ba370ab62d40375a21fa020ecd8078','Composite USB setup policy instructions changed')
                 mix=calls_to('fm1_forge_audio_output','fm1_usb_audio_dac')
                 require(len(mix)==1 and len(gain)==1 and mix[0]<gain[0],'Factory USB capture/mix must precede analog gain')
                 if factory_user_module:
@@ -596,7 +651,8 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             'usb_bootloader_entry':usb_only and 'go_mask_usb_updata' in symbols,
             'usb_peripheral_tests':usb_peripheral_tests,
             'usb_nes':usb_nes,'usb_mod':usb_mod,'factory_diag':factory_diag,'factory_user_module':factory_user_module,
-            'factory_clock':factory_clock if factory_diag else None,'factory_hal_access':factory_hal_access if factory_diag else None,'usb_audio':usb_audio,
+            'factory_clock':factory_clock if factory_diag else None,'factory_hal_access':factory_hal_access if factory_diag else None,'usb_audio':usb_audio,'usb_video':usb_video,
+            'usb_video_memory':{n:{'address':hex(value(n)),'bytes':symbols[n][1]} for n in ('fm1_uvc_state','fm1_uvc_control_state','fm1_forge_video_capture','fm1_uvc_dma')} if usb_video else None,
             'cartridge':None if display_only or (usb_only and not usb_nes) else rom,'embedded_rom_sha256':None if display_only or (usb_only and not usb_nes) else rom_sha,'hardware_boot_verified':False,'flashable':False}
 
 

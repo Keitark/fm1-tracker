@@ -74,13 +74,13 @@ builder arguments without execution. Direct diagnostic build:
 python firmware/usb-diag/build.py --controller 0 --factory-diag --out firmware/usb-diag/build/my-forge-candidate
 ```
 
-`config.schema.json` / `config.py` define project schemaVersion2. Module ABI1 and
-the factory transfer/profile identity remain unchanged. Strict legacy version1
-projects are accepted and normalized to version2 with all five user HALs enabled;
+`config.schema.json` / `config.py` define project schemaVersion3. Module ABI1 and
+the factory transfer/profile identity remain unchanged. Strict legacy version1/2
+projects normalize to version3 with UVC off; version1 enables all five user HALs.
 unknown fields and nonboolean selections are rejected. New/exported config:
 
 ```json
-{"schemaVersion":2,"project":{"slug":"first-synth","displayName":"First Synth"},"profile":"forge-diag","clockPreset":"sdk-default","lcdPreset":"stock-dma","module":"diagnostics","usb":{"cdc":true,"uac":true,"uboot":true},"hal":{"buttons":true,"encoders":true,"volume":true,"lcd":true,"audio":true}}
+{"schemaVersion":3,"project":{"slug":"first-synth","displayName":"First Synth"},"profile":"forge-diag","clockPreset":"sdk-default","lcdPreset":"stock-dma","module":"diagnostics","usb":{"cdc":true,"uac":true,"uvc":false,"uboot":true},"hal":{"buttons":true,"encoders":true,"volume":true,"lcd":true,"audio":true}}
 ```
 
 USB CDC and UBOOT are fixed. `uac=false` compiles a CDC-only profile; true provides
@@ -88,6 +88,14 @@ USB CDC and UBOOT are fixed. `uac=false` compiles a CDC-only profile; true provi
 bounded resampling to the44.1kHz DAC. Capture is generated digital audio, not a
 claimed analog microphone input. Opening/changing DTR on CDC does not stop the
 persistent diagnostics. `FORGE STOP` is an explicit full shutdown before UBOOT.
+
+`uvc=true` adds the optional 256×240 YUY2 / 5 fps screen producer with eight
+black pixels on either side of the native view. It reuses the ProTracker packet
+transport and keeps CDC/UBOOT plus optional UAC. The producer uses a frozen ABI
+frame and bounded foreground rendering, not a complete LCD framebuffer; custom
+renderers must keep their own mutable state coherent. See
+[the UVC integration receipt](../../docs/FM1_FORGE_UVC_20261013.md) for exact
+candidate hashes, offline tests and the pending Forge hardware checks.
 
 The Forge panel's USB, HAL, User and Tweaks areas configure this same document.
 All HALs default enabled. HAL selections govern **user-module access**, keeping

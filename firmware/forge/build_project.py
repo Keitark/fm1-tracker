@@ -12,6 +12,7 @@ def command(project,output,python=sys.executable):
     args=[str(python),str(ROOT/'firmware/usb-diag/build.py'),'--controller','0','--factory-diag','--forge-clock',config['clockPreset'],'--forge-lcd',config['lcdPreset'],'--out',str(output)]
     for name in HALS:args+=['--forge-hal-'+name,str(int(config['hal'][name]))]
     if not config['usb']['uac']:args+=['--forge-no-uac']
+    if config['usb']['uvc']:args+=['--forge-uvc']
     if config['module']=='user':
         module=project/'user.c'
         if not module.is_file() or module.is_symlink() or module.resolve().parent!=project:raise ValueError('User module must be project-local user.c')

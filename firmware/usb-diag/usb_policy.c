@@ -4,18 +4,32 @@
 #include "app_config.h"
 #include "usb/device/usb_stack.h"
 #endif
+#ifdef FM1_USB_VIDEO
+#include "fm1_uvc.h"
+#include "uvc_control.h"
+#endif
 /* Do not install the generic SDK private jump-to-ROM-updater command. */
 u32 usb_root2_testing(void) {return 0;}
 u32 check_ep_vaild(u32 ep) {return ep==0 || ep==2 || ep==3
 #ifdef FM1_USB_AUDIO
     || ep==1
 #endif
+#ifdef FM1_USB_VIDEO
+    || ep==4
+#endif
 ;}
 static u32 filter(struct usb_device_t *d,struct usb_ctrlrequest *r) {
     unsigned recip=r->bRequestType&USB_RECIP_MASK;
+#ifdef FM1_USB_VIDEO
+    /* Every SETUP cancels an older video OUT token. The bounded video core
+     * handles its interface/entity indices before the generic CDC/UAC policy. */
+    if(fm1_uvc_setup_filter(d,r))return 1;
+#endif
     if((r->bRequestType&USB_TYPE_MASK)==USB_TYPE_VENDOR || recip==USB_RECIP_OTHER ||
        (recip==USB_RECIP_INTERFACE && r->wIndex>
-#ifdef FM1_USB_AUDIO
+#ifdef FM1_USB_VIDEO
+        FM1_UVC_VS_INTERFACE
+#elif defined(FM1_USB_AUDIO)
         4
 #else
         1
@@ -25,6 +39,9 @@ static u32 filter(struct usb_device_t *d,struct usb_ctrlrequest *r) {
         r->wIndex!=2 && r->wIndex!=0x82 && r->wIndex!=0x83
 #ifdef FM1_USB_AUDIO
         && r->wIndex!=1 && r->wIndex!=0x81
+#endif
+#ifdef FM1_USB_VIDEO
+        && r->wIndex!=0x84
 #endif
        )) {
         usb_set_setup_phase(d,USB_EP0_SET_STALL); return 1;

@@ -266,7 +266,7 @@ u32 cdc_write_data(const usb_dev usb_id, u8 *buf, u32 len)
 }''')
     return text
 
-def device(text, composite=False):
+def device(text, composite=False, video=False):
     # CDC-only: do not pull video/audio/host header trees into this build.
     for name in ('usb/device/msd.h','usb/scsi.h','usb/device/hid.h','usb/device/uac_audio.h',
                  'usb/device/slave_uvc.h','usb/device/printer.h'):
@@ -285,6 +285,18 @@ def device(text, composite=False):
         text=once(text,'        cdc_register(usb_id);', '''        cdc_register(usb_id);
         extern u32 fm1_uac_desc_config(usb_dev,u8 *,u32 *);
         usb_add_desc_config(usb_id,class_index++,fm1_uac_desc_config);''')
+    if video:
+        # Keep existing CDC0/1 and UAC2/3/4; video follows as VC5/VS6,
+        # or VC2/VS3 for the CDC-only profile. No generic camera driver.
+        text='#include "fm1_uvc.h"\n'+text
+        # Retain the optional teardown entry for auditing without retaining
+        # the generic second-controller ISR or widening the reviewed route.
+        text=once(text,'int usb_device_mode(const usb_dev usb_id, const u32 class)\n{',
+            'int usb_device_mode(const usb_dev usb_id, const u32 class)\n{\n    if(usb_id!=USB0)return -4;')
+        anchor=('        usb_add_desc_config(usb_id,class_index++,fm1_uac_desc_config);'
+                if composite else '        cdc_register(usb_id);')
+        text=once(text,anchor,anchor+'\n        usb_add_desc_config(usb_id,class_index++,fm1_uvc_desc_config);')
+        text=once(text,'    if (class == 0) {','    if (class == 0) {\n        fm1_uvc_capture_stop();')
     return text
 
 if __name__=='__main__':
