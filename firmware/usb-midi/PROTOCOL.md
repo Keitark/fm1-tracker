@@ -103,8 +103,11 @@ an interrupted write. Use the existing separately reviewed recovery workflow.
 ## Provenance and release
 
 New independently authored files here use Apache-2.0; see `LICENSE` and `NOTICE`.
-This does not change licenses on the shared GPL-only USB/audio modules or grant
-rights in the vendor SDK. `docs/LICENSING.md` in the parent workspace records
-the inherited component boundaries. A public export must list exact source
+The separately defined USB/audio scope has its own owner-authorized Apache-2.0
+grant in [its scope/history notice](../usb-audio/RELICENSE.md); it is not included
+in this bounded MIDI export. This does not grant rights in the vendor SDK or
+change licenses of unrelated GPL engines or the official M-VAVE APP.
+`docs/LICENSING.md` in the parent workspace records the component boundaries.
+A public export must list exact source
 hashes, retain these notices, exclude private outputs and remain a review
 candidate until source and redistribution rights are checked.

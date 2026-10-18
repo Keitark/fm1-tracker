@@ -255,13 +255,13 @@ def main():
         transformed=vendor_overlay.nes_render_skip(original.read_text(encoding='utf-8'))
         if a.nes_tiles:transformed=vendor_overlay.nes_tiles(transformed)
         if a.nes_profile:transformed=vendor_overlay.nes_profile(transformed)
-        target.write_text(transformed,encoding='utf-8')
+        target.write_text(vendor_overlay.modified_notice(transformed),encoding='utf-8')
         sources[sources.index(original)]=target
         speed_sources.remove(original);speed_sources.add(target)
         overlays[str(original)]=hashlib.sha256(original.read_bytes()).hexdigest()
     if a.nes_channel_fx:
         original=core/'src/nes_apu.c';target=out/'fm1-nes_apu.c'
-        target.write_text(vendor_overlay.nes_apu(original.read_text(encoding='utf-8')),encoding='utf-8')
+        target.write_text(vendor_overlay.modified_notice(vendor_overlay.nes_apu(original.read_text(encoding='utf-8'))),encoding='utf-8')
         sources[sources.index(original)]=target
         speed_sources.remove(original);speed_sources.add(target)
         overlays[str(original)]=hashlib.sha256(original.read_bytes()).hexdigest()
@@ -272,7 +272,7 @@ def main():
         if name=='usb_device.c':transformed=transform(original_text,composite=usb_audio,video=a.forge_uvc,midi=a.usb_midi_update)
         elif a.factory_diag and name=='cdc.c':transformed=transform(original_text,composite=True)
         else:transformed=transform(original_text)
-        target.write_text(transformed,encoding='utf-8')
+        target.write_text(vendor_overlay.modified_notice(transformed),encoding='utf-8')
         sources.append(target);overlays[str(original)]=hashlib.sha256(original.read_bytes()).hexdigest()
     for source,name in ((SDK/'cpu/wl82/sdk_ld.c','sdk.ld'),(SDK/'cpu/wl82/sdk_used_list.c','sdk.used')):
         run([TC/'clang.exe',*flags,*defines,*includes,'-D__LD__','-E','-P',source,'-o',out/name])
@@ -393,7 +393,7 @@ def main():
         result['profile']='FM1_FORGE_FACTORY_DIAG_V1'
         result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for folder in (HERE.parent/'forge',HERE.parent/'usb-audio') for s in folder.glob('*.h')})
         result['source_sha256'][str(NES/'audit_usb_packet.py')]=hashlib.sha256((NES/'audit_usb_packet.py').read_bytes()).hexdigest()
-        provenance=[HERE.parent/'usb-audio'/n for n in ('PROVENANCE.md','SOURCE_ORIGIN.json')]+[HERE.parents[1]/'licenses/fm1-mdx-GPL-3.0.txt',HERE.parent/'forge/config.schema.json']+list((HERE.parent/'forge').glob('*.py'))
+        provenance=[HERE.parent/'usb-audio'/n for n in ('LICENSE','NOTICE','RELICENSE.md','PROVENANCE.md','SOURCE_ORIGIN.json')]+[HERE.parent/'forge/config.schema.json']+list((HERE.parent/'forge').glob('*.py'))
         result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in provenance})
         if a.forge_user_module:
             module_folder=a.forge_user_module.resolve().parent

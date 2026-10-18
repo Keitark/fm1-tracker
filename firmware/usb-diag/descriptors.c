@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Keitark
+ * See firmware/usb-audio/RELICENSE.md for the scoped license grant. */
 #include "app_config.h"
 #include "usb/device/usb_stack.h"
 /* Private bench identity, inherited Jieli SDK VID/PID pair, NOT a newly

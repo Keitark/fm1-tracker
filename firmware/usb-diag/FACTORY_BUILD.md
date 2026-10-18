@@ -30,7 +30,10 @@ archive hashes, and a complete static audit. Static checks pin the boot/power
 sequence, CPU0 task table, internal RAM/heap budget, USB descriptors/setup policy,
 packet IRQ/DMA ownership, render/mix/gain ordering and confirmed UBOOT quiescence.
 Reused USB sources and their upstream hashes are recorded in
-`../usb-audio/SOURCE_ORIGIN.json`; GPL attribution is in `../usb-audio/PROVENANCE.md`.
+`../usb-audio/SOURCE_ORIGIN.json`. The current project-owned USB/audio grant is
+Apache-2.0; see `../usb-audio/RELICENSE.md`, `LICENSE` and `NOTICE` there.
+Historical GPL import evidence remains in provenance. SDK/PeakRacing and any
+separately linked MDX engines retain their own terms.
 
 Validation commands after a target build:
 
