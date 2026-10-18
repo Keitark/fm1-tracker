@@ -1,0 +1,20 @@
+FM-1 common USB-MIDI update candidate
+Copyright 2026 Keitarou Kondou
+
+New, independently authored transport, container wrapper, browser sender and
+tests in this directory are provided under Apache License 2.0. This scope does
+not relicense the surrounding firmware, vendor SDK, boot resources or assets.
+
+Factual interoperability references:
+- m-vave/fm1_open, b178ac43c25f010c60a878056fb5331fe693fd62:
+  sdk/WebUpdate.js (GPLv3 with its SDK linking exception), sdk/Package.cs (MIT),
+  SDK public API documentation and separately licensed resource manifest.
+  No official APP/engine source implementation is incorporated here.
+- Existing pinned Jieli WL82 update_loader_download.h / update.h interfaces.
+  The SDK remains an externally supplied dependency with its own terms.
+
+The optional OTA resource is not included. Its exact hash is checked when
+preparing a private package; obtain it from the pinned official M-VAVE SDK and
+retain the resource's upstream Apache notices with any permitted distribution.
+
+No endorsement by M-VAVE, Jieli or OpenAI is implied.

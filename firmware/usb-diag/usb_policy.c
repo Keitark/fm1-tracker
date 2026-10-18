@@ -17,6 +17,9 @@ u32 check_ep_vaild(u32 ep) {return ep==0 || ep==2 || ep==3
 #ifdef FM1_USB_VIDEO
     || ep==4
 #endif
+#ifdef FM1_USB_MIDI_UPDATE
+    || ep==4
+#endif
 ;}
 static u32 filter(struct usb_device_t *d,struct usb_ctrlrequest *r) {
     unsigned recip=r->bRequestType&USB_RECIP_MASK;
@@ -29,6 +32,12 @@ static u32 filter(struct usb_device_t *d,struct usb_ctrlrequest *r) {
        (recip==USB_RECIP_INTERFACE && r->wIndex>
 #ifdef FM1_USB_VIDEO
         FM1_UVC_VS_INTERFACE
+#elif defined(FM1_USB_MIDI_UPDATE)
+#ifdef FM1_USB_AUDIO
+        6
+#else
+        3
+#endif
 #elif defined(FM1_USB_AUDIO)
         4
 #else
@@ -42,6 +51,9 @@ static u32 filter(struct usb_device_t *d,struct usb_ctrlrequest *r) {
 #endif
 #ifdef FM1_USB_VIDEO
         && r->wIndex!=0x84
+#endif
+#ifdef FM1_USB_MIDI_UPDATE
+        && r->wIndex!=3 && r->wIndex!=0x84
 #endif
        )) {
         usb_set_setup_phase(d,USB_EP0_SET_STALL); return 1;

@@ -266,7 +266,7 @@ u32 cdc_write_data(const usb_dev usb_id, u8 *buf, u32 len)
 }''')
     return text
 
-def device(text, composite=False, video=False):
+def device(text, composite=False, video=False, midi=False):
     # CDC-only: do not pull video/audio/host header trees into this build.
     for name in ('usb/device/msd.h','usb/scsi.h','usb/device/hid.h','usb/device/uac_audio.h',
                  'usb/device/slave_uvc.h','usb/device/printer.h'):
@@ -297,6 +297,11 @@ def device(text, composite=False, video=False):
                 if composite else '        cdc_register(usb_id);')
         text=once(text,anchor,anchor+'\n        usb_add_desc_config(usb_id,class_index++,fm1_uvc_desc_config);')
         text=once(text,'    if (class == 0) {','    if (class == 0) {\n        fm1_uvc_capture_stop();')
+    if midi:
+        if video:raise ValueError('USB MIDI EP4 IN conflicts with UVC')
+        anchor=('        usb_add_desc_config(usb_id,class_index++,fm1_uac_desc_config);'
+                if composite else '        cdc_register(usb_id);')
+        text=once(text,anchor,anchor+'\n        extern u32 fm1_midi_desc_config(usb_dev,u8 *,u32 *);\n        usb_add_desc_config(usb_id,class_index++,fm1_midi_desc_config);')
     return text
 
 if __name__=='__main__':

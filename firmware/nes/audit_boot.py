@@ -80,6 +80,8 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
         name=string(strings,name)
         require(not(name and index==0 and info>>4 in (1,2)),'Unresolved symbol '+name)
         if name: symbols[name]=(value,size,index)
+    usb_midi='fm1_usb_midi_poll' in symbols
+    require(not usb_midi or (usb_only and not usb_video),'USB MIDI requires USB0 and excludes conflicting UVC')
     def value(name):
         require(name in symbols,'Missing startup symbol '+name)
         return symbols[name][0]
@@ -317,6 +319,7 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
     expected_tasks=(('app_core',15,4096,1024),('sys_event',29,512,0),
                     ('systimer',14,256,0),('sys_timer',9,512,128),
                     (('#C0usb_diag' if factory_diag else 'usb_diag',10,2048,0) if usb_only else ('fm1_nes',10,4096,0)))
+    if usb_midi:expected_tasks=expected_tasks[:4]+(('#C0update',9,2048,0),)+expected_tasks[4:]
     if usb_peripheral_tests:expected_tasks+=(('#C0peripheral' if factory_diag else 'peripheral',8,4096 if (usb_nes or usb_mdx or usb_mod or factory_diag) else 2048,0),)
     require(symbols['task_info_table'][1]==20*(len(expected_tasks)+1),
             'SDK/NES task table size changed')
@@ -366,7 +369,21 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
         for name in ('cdc_read_data','cdc_write_data','fm1_cdc_ready','fm1_usb_dma','fm1_diag_feed'):
             require(name in symbols,'Missing USB diagnostic '+name)
         descriptor=bytes((18,1,0,2,2,2,1,64,0x54,0x36,0x55,0x51,0,2,1,2,0,1))
-        if usb_audio or usb_video:descriptor=bytes((18,1,0,2,0xef,2,1,64,0x54,0x36,0x55,0x51,3,2,1,2,0,1))
+        if usb_audio or usb_video or usb_midi:descriptor=bytes((18,1,0,2,0xef,2,1,64,0x54,0x36,0x55,0x51,3,2,1,2,0,1))
+        if usb_midi:
+            for name in ('fm1_usb_midi_init','fm1_midi_desc_config','fm1_midi_descriptor','fm1_midi_update_message','fm1_midi_update_poll'):
+                require(name in symbols,'Missing common MIDI integration '+name)
+            require(symbols['fm1_midi_build_id'][1]==32,'Common MIDI build identity must be 32 bytes')
+            require(symbols['fm1_midi_install_enabled'][1]==1 and code_at(value('fm1_midi_install_enabled'),1)==b'\0','Unqualified MIDI installation must remain blocked')
+            require('usb1_g_isr' not in symbols,'MIDI must retain USB0-only ownership')
+            for name in ('fm1_midi_dma_in','fm1_midi_dma_out'):
+                address,size,_=symbols[name]
+                require(address%64==0 and size==256 and bss[3]<=address and address+size<=bss[3]+bss[5],'MIDI DMA alignment/internal RAM placement changed')
+            midi_descriptor=bytes((8,11,0,2,1,0,0,0,9,4,0,0,0,1,1,0,0,9,36,1,0,1,9,0,1,0,
+                9,4,0,0,2,1,3,0,0,7,36,1,0,1,65,0,6,36,2,1,1,0,6,36,2,2,2,0,
+                9,36,3,1,3,1,2,1,0,9,36,3,2,4,1,1,1,0,9,5,3,2,64,0,0,0,0,5,37,1,1,1,
+                9,5,132,2,64,0,0,0,0,5,37,1,1,3))
+            require(symbols['fm1_midi_descriptor.d'][1]==100 and code_at(value('fm1_midi_descriptor.d'),100)==midi_descriptor,'Common MIDI descriptor/jacks/endpoint addresses changed')
         if usb_audio:
             for name in ('fm1_uac_desc_config','fm1_usb_audio_dac','fm1_usb_audio_stop','fm1_uac_descriptor','fm1_uac_dma'):
                 require(name in symbols,'Missing composite audio component '+name)
@@ -380,7 +397,7 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             if not usb_video:
                 for name in ('fm1_uvc_state','fm1_uvc_dma','fm1_uvc_desc_config'):
                     require(name not in symbols,'Non-video factory links UVC '+name)
-            audit_usb_packet(symbols,code_at,composite=usb_audio,video=usb_video)
+            audit_usb_packet(symbols,code_at,composite=usb_audio,video=usb_video,midi=usb_midi)
             for name in ('cartridge','player','song','upload','fm1_demo_mdx','fm1_demo_pdx','fm1_mod_open','fm1_mdx_load'):
                 require(name not in symbols,'Factory contains media/player component '+name)
             for name in ('fm1_forge_usb_command','fm1_forge_render','fm1_forge_clock_prepare','fm1_peripheral_usb_audio_quiesce'):
@@ -474,7 +491,17 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
                 for name in ('fm1_uvc_state','fm1_uvc_dma','fm1_uvc_desc_config'):
                     require(name not in symbols,'Non-video factory links UVC '+name)
             if usb_audio:
-                if not usb_video:require('filter' in symbols and symbols['filter'][1]==74 and hashlib.sha256(code_at(value('filter'),74)).hexdigest()=='8aefdb7c31f5e456688d6564c9d5cf5829ba370ab62d40375a21fa020ecd8078','Composite USB setup policy instructions changed')
+                if usb_midi:
+                    # Reviewed r4: vendor/other requests stall; full 16-bit
+                    # interface indices allow 0..6, endpoint addresses only
+                    # 0..3 and 0x80..0x84. The short stall call is checked
+                    # independently before the remaining 72 bytes are hashed.
+                    require(symbols['filter'][1]==74,'MIDI composite setup policy size changed')
+                    policy=bytearray(code_at(value('filter'),74))
+                    require(calls_to('filter','usb_set_setup_phase')==[0x2c] and policy[0x2c:0x2e]==bytes.fromhex('71 87'),'MIDI setup stall call changed')
+                    policy[0x2c:0x2e]=bytes(2)
+                    require(hashlib.sha256(policy).hexdigest()=='64efa042da63015bb3abcddaf1a50b96c4a34689703db833a89007747775ea79','MIDI composite USB setup policy instructions changed')
+                elif not usb_video:require('filter' in symbols and symbols['filter'][1]==74 and hashlib.sha256(code_at(value('filter'),74)).hexdigest()=='8aefdb7c31f5e456688d6564c9d5cf5829ba370ab62d40375a21fa020ecd8078','Composite USB setup policy instructions changed')
                 mix=calls_to('fm1_forge_audio_output','fm1_usb_audio_dac')
                 require(len(mix)==1 and len(gain)==1 and mix[0]<gain[0],'Factory USB capture/mix must precede analog gain')
                 if factory_user_module:
@@ -609,7 +636,7 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
         addr,size,_=symbols['cartridge'];start=addr-XIP
         require(size==rom_size and 0<=start and start+size<=sections['.text'][5],'Cartridge is not wholly in XIP')
         require(hashlib.sha256(data(sections['.text'])[start:start+size]).hexdigest()==rom_sha,'Embedded cartridge hash mismatch')
-    power_report=audit_power(symbols,sections,code_at,required=require_board_power,usb_only=usb_only,usb_audio=usb_audio,factory_diag=factory_diag)
+    power_report=audit_power(symbols,sections,code_at,required=require_board_power,usb_only=usb_only,usb_audio=usb_audio,factory_diag=factory_diag,usb_midi=usb_midi)
     pre_os_report=audit_pre_os(symbols,code_at)
     require(not require_screen_first or power_report.get('screen_first',False),'Missing screen-first board hook')
     return {'static_audit':'passed','entry':hex(entry),'application_bytes':len(app),
@@ -651,6 +678,7 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             'usb_bootloader_entry':usb_only and 'go_mask_usb_updata' in symbols,
             'usb_peripheral_tests':usb_peripheral_tests,
             'usb_nes':usb_nes,'usb_mod':usb_mod,'factory_diag':factory_diag,'factory_user_module':factory_user_module,
+            'usb_midi_update':usb_midi,'usb_midi_installation_enabled':False,
             'factory_clock':factory_clock if factory_diag else None,'factory_hal_access':factory_hal_access if factory_diag else None,'usb_audio':usb_audio,'usb_video':usb_video,
             'usb_video_memory':{n:{'address':hex(value(n)),'bytes':symbols[n][1]} for n in ('fm1_uvc_state','fm1_uvc_control_state','fm1_forge_video_capture','fm1_uvc_dma')} if usb_video else None,
             'cartridge':None if display_only or (usb_only and not usb_nes) else rom,'embedded_rom_sha256':None if display_only or (usb_only and not usb_nes) else rom_sha,'hardware_boot_verified':False,'flashable':False}

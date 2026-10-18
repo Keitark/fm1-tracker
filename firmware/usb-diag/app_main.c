@@ -8,6 +8,10 @@
 #include "boot_trace.h"
 #include "protocol.h"
 #include "boot_entry.h"
+#ifdef FM1_USB_MIDI_UPDATE
+#include "fm1_midi_target.h"
+#include "fm1_midi_update.h"
+#endif
 #ifdef FM1_USB_AUDIO
 #include "target.h"
 #endif
@@ -25,6 +29,9 @@ const struct irq_info irq_info_table[]={{-1,-1,-1}};
 const struct task_info task_info_table[]={
     {"app_core",15,4096,1024},{"sys_event",29,512,0},
     {"systimer",14,256,0},{"sys_timer",9,512,128},
+#ifdef FM1_USB_MIDI_UPDATE
+    {"#C0update",9,2048,0},
+#endif
 #ifdef FM1_FORGE
     {"#C0usb_diag",10,2048,0},
 #else
@@ -67,6 +74,9 @@ static void fm1_usb_task(void *arg) {
     fm1_usb_stage=3;
     for(;;) {
         uint32_t now=timer_get_ms();
+#ifdef FM1_USB_MIDI_UPDATE
+        fm1_usb_midi_poll(now);
+#endif
         ++fm1_usb_heartbeat;
         if(generation!=fm1_cdc_generation || !fm1_cdc_ready(FM1_USB_CONTROLLER)) {
 #if defined(FM1_PERIPHERAL_TESTS) && !defined(FM1_FORGE)
@@ -103,7 +113,13 @@ static void fm1_usb_task(void *arg) {
 #ifdef FM1_PERIPHERAL_TESTS
             if(protocol.test_requested) {
                 unsigned test=protocol.test_requested;protocol.test_requested=0;
-                if(fm1_usb_boot_pending() || fm1_peripheral_request(test,generation))reply(NULL,"ERR TEST_BUSY\n");
+                if(fm1_usb_boot_pending() ||
+#ifdef FM1_USB_MIDI_UPDATE
+                   /* STOP and STATUS remain available; new test workers
+                    * cannot reclaim peripherals during an update session. */
+                   (fm1_midi_update_busy() && test!=1 && test!=6) ||
+#endif
+                   fm1_peripheral_request(test,generation))reply(NULL,"ERR TEST_BUSY\n");
                 else reply(NULL,"OK TEST REQUEST\n");
             }
             if(!fm1_usb_boot_pending() && tx_w==tx_r) {
@@ -146,6 +162,9 @@ static void fm1_usb_task(void *arg) {
 }
 void app_main(void) {
     fm1_boot_trace_mark(FM1_TRACE_APP); fm1_usb_stage=1;
+#ifdef FM1_USB_MIDI_UPDATE
+    fm1_usb_midi_init();
+#endif
 #ifdef FM1_FORGE
     fm1_forge_clock_prepare();
 #endif

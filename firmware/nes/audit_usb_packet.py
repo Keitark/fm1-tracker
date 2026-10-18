@@ -11,19 +11,32 @@ CALLS=((0x30,6,'__local_irq_disable'),(0x38,4,'usb_id2device'),
 # Short two-byte calls retain exact encodings and checked target distances.
 SHORT={0x5c:(bytes.fromhex('41 8f'),-226),0x8c:(bytes.fromhex('41 85'),-246)}
 
-def audit_usb_packet(symbols,code_at,composite=True,video=False):
+def audit_usb_packet(symbols,code_at,composite=True,video=False,midi=False):
     def require(ok,msg):
         if not ok:raise ValueError('USB packet '+msg)
     require('fm1_usb_packet_write' in symbols,'commit missing')
     for name in ('usb_g_bulk_write','usb_g_iso_write','usb_g_ep_write'):
         require(name not in symbols,'polling writer linked: '+name)
     start,size,_=symbols['fm1_usb_packet_write']
-    require(size==(158 if composite else 156),'commit size changed')
+    require(size==(162 if midi and composite else 158 if composite else 156),'commit size changed')
     calls=CALLS if composite else ((0x30,6,'__local_irq_disable'),(0x38,4,'usb_id2device'),
        (0x46,4,'usb_read_txcsr'),(0x5a,2,'usb_get_dma_taddr'),
        (0x68,6,'memmove'),(0x8a,2,'usb_write_txcsr'),(0x8e,6,'__local_irq_enable'))
     short=SHORT if composite else {0x5a:(bytes.fromhex('41 90'),-224),0x8a:(bytes.fromhex('41 86'),-244)}
     digest=BODY_SHA256 if composite else '132aa8a42844f92fa65336381fc28eb82e7be54304967425bed0a76f4ad905a0'
+    if midi and composite:
+        # The MIDI adapter makes these shared SDK helpers more distant. Exact
+        # 2026-10-18 r3 disassembly comparison with the accepted 2026-10-12
+        # composite link has the same 51 semantic instructions and branch
+        # destinations: only two 2-byte calls widen to 4 bytes and relative
+        # branch distances change. EP1/192 or EP3/<64 bounds, IRQ nesting,
+        # epoch/DMA checks, exact EP1/3 count addresses, csync and ICFG restore
+        # remain fully hashed. Every widened call is independently targeted.
+        calls=((0x30,6,'__local_irq_disable'),(0x38,4,'usb_id2device'),
+               (0x48,4,'usb_read_txcsr'),(0x5c,4,'usb_get_dma_taddr'),
+               (0x6c,6,'memmove'),(0x8e,4,'usb_write_txcsr'),(0x94,6,'__local_irq_enable'))
+        short={}
+        digest='ec7526fe5eb7bbcef376fc2a4290d4c322e6e422dd1359eecd20d13c88ce944e'
     if video:
         # packet.c is unchanged and still permits only EP1/192 or EP3/<64.
         # The additional EP4 adapter shares SDK register helpers, so LTO no

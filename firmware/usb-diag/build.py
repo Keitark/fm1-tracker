@@ -25,6 +25,7 @@ def main():
     p.add_argument('--factory-diag',action='store_true',help='Asset-free FM1-FORGE diagnostics with persistent LCD/controls, key tones and composite CDC/UAC1')
     p.add_argument('--forge-no-uac',action='store_true',help='Factory diagnostics with CDC only; no audio USB class')
     p.add_argument('--forge-uvc',action='store_true',help='Optional ProTracker-derived USB0 UVC screen: 256x240 YUY2 / 5 fps; requires factory diagnostics')
+    p.add_argument('--usb-midi-update',action='store_true',help='Opt-in common MIDI update transport; installation remains blocked pending loader/package/device qualification')
     p.add_argument('--forge-clock',choices=('sdk-default','sdk-320'),default='sdk-default')
     p.add_argument('--forge-lcd',choices=('stock-dma','spi15-rgb444','spi30-rgb444'),default='stock-dma')
     p.add_argument('--forge-user-module',type=Path,help='Explicit self-authored C module source, included in source-hash closure')
@@ -61,6 +62,7 @@ def main():
     p.add_argument('--lcd-stock-dma',action='store_true',help='Stock setup-before-delay, DMA parameters, fixed register snapshots; requires --lcd-stock-fill')
     p.add_argument('--lcd-stock-sequence',action='store_true',help='Stock PA2/GPIO setup, scheduler delays and 40-byte DMA black first fill; requires --lcd-stock-dma')
     a=p.parse_args(); out=a.out.resolve(); out.mkdir(parents=True,exist_ok=True)
+    if a.usb_midi_update and a.forge_uvc:p.error('USB MIDI update EP4 IN conflicts with UVC in this candidate')
     if a.factory_diag:
         if a.mdx or a.mod or a.nes_smb1:p.error('Factory diagnostic excludes player profiles and external media')
         if a.forge_clock=='sdk-320' and a.forge_lcd!='stock-dma':p.error('SDK 320 MHz uses a 53 MHz LSB bus; fast LCD presets require 60 MHz')
@@ -117,6 +119,7 @@ def main():
     power=verify(STOCK.read_bytes())
     text=MAKE.read_text(encoding='utf-8');flags=make_list(text,'CFLAGS')
     defines=make_list(text,'DEFINES')+['-DFM1_USB_CONTROLLER='+str(a.controller)]
+    if a.usb_midi_update:defines+=['-DFM1_USB_MIDI_UPDATE=1','-DFM1_MIDI_LOADER_COMPATIBLE=0']
     if a.peripheral_tests:defines+=['-DFM1_PERIPHERAL_TESTS=1']
     if a.factory_diag:defines+=['-DFM1_FORGE=1','-DFM1_FACTORY_DIAG=1','-DFM1_TARGET_PI32V2=1','-DFM1_KEYSCAN_DMA2=1','-DFM1_KEYSCAN_IRQ=1','-DFM1_KEYSCAN_PACED=1','-DFM1_FORGE_BOOT_CLOCK_HZ='+('320000000' if a.forge_clock=='sdk-320' else '0')]
     if a.factory_diag:defines+=['-DFM1_FORGE_HAL_'+name.upper()+'='+str(int(hal_access[name])) for name in hal_names]
@@ -150,12 +153,14 @@ def main():
     includes=['-I'+str(x) for x in (HERE,NES/'boot',NES/'include',SDK/'apps/common',SDK/'apps/common/usb',SDK/'apps/common/usb/device')]
     if a.factory_diag:includes=['-I'+str(HERE.parent/'forge'),'-I'+str(HERE.parent/'usb-audio')]+includes
     if a.forge_uvc:includes=['-I'+str(HERE.parent/'usb-video')]+includes
+    if a.usb_midi_update:includes=['-I'+str(HERE.parent/'usb-midi')]+includes
     if a.forge_user_module:includes=['-I'+str(a.forge_user_module.resolve().parent)]+includes
     includes+=['-I'+str(sdk_path(x[2:])) for x in make_list(text,'INCLUDES')]
     sources=[sdk_path(x) for name in ('c_SRC_FILES','S_SRC_FILES') for x in make_list(text,name)]
     sources=[s for s in sources if s.name not in ('app_main.c','board.c','cpp_run_init.c')]
     sources += [NES/'boot'/n for n in ('board.c','boot_compat.c','boot_trace.c','board_power.c')]
     sources += [HERE/n for n in ('app_main.c','protocol.c','descriptors.c','usb_policy.c','dma.c','rx_channel.c','boot_entry.c')]
+    if a.usb_midi_update:sources += [HERE.parent/'usb-midi'/n for n in ('fm1_midi.c','fm1_midi_update.c','fm1_midi_target.c','fm1_sha256.c')]
     if a.factory_diag:sources += [HERE/'packet.c']
     if a.peripheral_tests:
         sources += [HERE/n for n in (('peripheral_logic.c',) if (a.mdx or a.mod or a.factory_diag) else ('peripherals.c','peripheral_logic.c'))]
@@ -264,7 +269,7 @@ def main():
         original=SDK/'apps/common/usb/device'/name
         target=out/('fm1-'+name)
         original_text=original.read_text(encoding='utf-8')
-        if a.factory_diag and name=='usb_device.c':transformed=transform(original_text,composite=usb_audio,video=a.forge_uvc)
+        if name=='usb_device.c':transformed=transform(original_text,composite=usb_audio,video=a.forge_uvc,midi=a.usb_midi_update)
         elif a.factory_diag and name=='cdc.c':transformed=transform(original_text,composite=True)
         else:transformed=transform(original_text)
         target.write_text(transformed,encoding='utf-8')
@@ -277,6 +282,7 @@ def main():
     if a.forge_user_module:used.write_text(used.read_text()+'fm1_forge_user_module\n')
     if usb_audio:used.write_text(used.read_text()+'fm1_usb_audio_dac\nfm1_usb_audio_stop\nfm1_uac_desc_config\nfm1_uac_descriptor\n')
     if a.forge_uvc:used.write_text(used.read_text()+'fm1_uvc_setup_init\nfm1_uvc_desc_config\nfm1_uvc_setup_filter\nfm1_uvc_capture_stop\nfm1_uvc_get_status\nfm1_uvc_video_descriptor\nfm1_forge_capture_step\nfm1_forge_capture_packet\nusb_device_mode\n')
+    if a.usb_midi_update:used.write_text(used.read_text()+'fm1_usb_midi_init\nfm1_usb_midi_poll\nfm1_midi_desc_config\nfm1_midi_descriptor\nfm1_midi_build_id\nfm1_midi_install_enabled\nfm1_midi_update_message\nfm1_midi_update_poll\n')
     if a.mdx:used.write_text(used.read_text()+'fm1_mdx_load\nfm1_mdx_render\nfm1_mdx_usb_command\nfm1_wl82_keyscan_async_raw\n')
     if a.mod:used.write_text(used.read_text()+'fm1_mod_open\nfm1_mod_render\nfm1_mod_usb_command\nfm1_wl82_keyscan_async_raw\n')
     if a.nes_smb1:used.write_text(used.read_text()+'fm1_board_run\nfm1_display_write\nfm1_audio_startup_process24\nfm1_nes_run\n')
@@ -287,6 +293,19 @@ def main():
         ld=vendor_overlay.once(ld,'*('+section+')','/* no persistent cfg repair */')
     ld+='\nSECTIONS { /DISCARD/ : { *(.syscfg.2.ops) *(.syscfg.1.ops) } }\n'
     (out/'sdk.ld').write_text(ld)
+    if a.usb_midi_update:
+        closure=hashlib.sha256()
+        closure_paths=sources+list(HERE.glob('*.h'))+list((NES/'include').glob('*.h'))+list((NES/'boot').glob('*.h'))
+        for folder in ('usb-midi','forge','usb-audio','usb-video','protracker','mdx'):
+            closure_paths+=list((HERE.parent/folder).rglob('*.h')) if folder=='mdx' else list((HERE.parent/folder).glob('*.h'))
+        if a.forge_user_module:closure_paths+=list(a.forge_user_module.resolve().parent.glob('*.h'))
+        for source in sorted(set(closure_paths),key=str):
+            closure.update(str(source.relative_to(ROOT) if source.is_relative_to(ROOT) else source).replace('\\','/').encode());closure.update(b'\0');closure.update(source.read_bytes())
+        closure.update(('\n'.join(defines+flags)+'\n'+SDK_PIN).encode())
+        midi_build_id=closure.hexdigest()
+        identity=out/'fm1-midi-build-id.c'
+        identity.write_text('#include <stdint.h>\nconst uint8_t fm1_midi_build_id[32]={'+','.join('0x'+midi_build_id[i:i+2] for i in range(0,64,2))+'};\n',encoding='ascii')
+        sources.append(identity)
     objects=[]
     for i,source in enumerate(sources):
         obj=out/(str(i)+'-'+source.name+'.o');objects.append(obj)
@@ -314,6 +333,7 @@ def main():
             'application_sha256':hashlib.sha256(app.read_bytes()).hexdigest(),
             'update_transport':'CDC verify-only; not stored or installed','flash_commit':'BLOCKED_STOCK_LAYOUT_UNQUALIFIED',
             'device_operations_performed':False,'static_audit':report,'power_evidence':power,
+            'usb_midi_update':a.usb_midi_update,
             'peripheral_tests':a.peripheral_tests,'serial_uboot':'implemented; transition not hardware-qualified',
             'factory_diag':a.factory_diag,'factory_schema':1 if a.factory_diag else None,'usb_audio':usb_audio,
             'usb_video':a.forge_uvc,'forge_uvc':a.forge_uvc,
@@ -355,6 +375,9 @@ def main():
             'source_sha256':{str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in sources+list(HERE.glob('*.h'))+list(HERE.glob('*.py'))+
                 [NES/n for n in ('audit_boot.py','audit_power.py','audit_pre_os.py','build_stock_image.py')]+list((NES/'include').glob('*.h'))+list((NES/'boot').glob('*.h'))},
             'archive_sha256':{str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in libs}}
+    if a.usb_midi_update:
+        result['usb_midi_update_contract']={'family':8,'build_id':midi_build_id,'loader_compatible':False,'installation_enabled':False,'endpoint_in':'0x84','endpoint_out':'0x03','midi_interfaces':[5,6] if usb_audio else [2,3],'hardware_accepted':False,'update_engine':'pinned SDK single-bank active update; install guard disabled'}
+        result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in (HERE.parent/'usb-midi').glob('*.h')})
     if a.mdx:
         result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in mdx.rglob('*.h')})
         result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in (mdx/'samples').glob('*') if s.is_file()})

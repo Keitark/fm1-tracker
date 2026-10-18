@@ -107,7 +107,7 @@ def call_target(code, address):
     return address + 4 + relative * 2
 
 
-def audit_power(symbols, sections, code_at, required=False, usb_only=False, usb_audio=False,factory_diag=False):
+def audit_power(symbols, sections, code_at, required=False, usb_only=False, usb_audio=False,factory_diag=False,usb_midi=False):
     def value(name):
         require(name in symbols, 'Missing board power symbol ' + name)
         return symbols[name][0]
@@ -198,7 +198,18 @@ def audit_power(symbols, sections, code_at, required=False, usb_only=False, usb_
     expected = bytearray.fromhex('75 04 c4 ff 00 00 00 00 50 ee 4c 02 80 48 45 21 c5 6c '
                                   '00 00 00 00 52 ee 4c 52 4c ea 02 40 55 04')
     struct.pack_into('<I', expected, 4, phase-48)
-    if usb_audio:
+    if usb_audio and usb_midi:
+        # MIDI/UAC r4 has the already reviewed +28 guard/+32 stage layout,
+        # shifted from the legacy audio-only +24/+28 layout. The complete
+        # same 32-byte guarded gateway remains pinned below, including its
+        # exact call target and ordered stage 1/2 writes.
+        require(usb_only and phase==value('ota_status')+32 and
+                value('initialized')==value('ota_status')+28 and symbols['initialized'][1]==4,
+                'MIDI composite power gateway state layout changed')
+        expected=bytearray.fromhex('75 04 c4 ff 00 00 00 00 50 ee 4c 01 80 48 45 21 c5 68 '
+                                  '00 00 00 00 52 ee 4c 51 48 ea 02 40 55 04')
+        struct.pack_into('<I',expected,4,value('ota_status'))
+    elif usb_audio:
         require(usb_only and phase==value('ota_status')+28 and
                 value('initialized')==value('ota_status')+24 and symbols['initialized'][1]==4,
                 'Composite audio power gateway state layout changed')

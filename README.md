@@ -13,6 +13,18 @@ offline packages remain separate from device transfer and physical acceptance.
 The [2026-10-11 Forge handoff](docs/FM1_FORGE_HANDOFF_20261011.md) records the
 exact private candidate, validation and remaining first-transfer steps.
 
+The [common USB-MIDI update candidate](firmware/usb-midi/README.md) adds an
+opt-in native-plugin JavaScript route through the pinned SDK's single-bank updater.
+It includes bounded MIDI framing, exact package checks and a current-device
+baseline guard. Normal target builds keep installation disabled pending loader
+compatibility and bench acceptance; no device has been flashed by this work.
+The [linked candidate evidence](docs/COMMON_MIDI_IMPLEMENTATION_20261018.md)
+records the exact build, tests and unqualified physical gates.
+The existing manufacturer stock updater remains separate. Public source is
+being prepared using an [explicit inventory](tools/public-release/README.md),
+with [component licenses preserved](docs/LICENSING.md); the private repository
+and its history are not published by that preparation.
+
 This workspace contains a read-only research baseline for the M-VAVE FM-1 pocket FM synthesizer, captured on 2026-08-12.
 
 Start with [docs/FM1_RESEARCH.md](docs/FM1_RESEARCH.md). It records the verified hardware, AC7911B8 specifications, stock V14/V15 firmware layout, MIDI surface, updater behavior, confidence levels, and a conservative route toward replacement firmware.
