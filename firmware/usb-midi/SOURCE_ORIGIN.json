@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "license": "Apache-2.0",
+  "implementation": "Independent common USB-MIDI framing, USB0 adapter and pinned SDK active-update file operations",
+  "native_files": ["fm1_midi.c", "fm1_midi.h", "fm1_midi_update.c", "fm1_midi_update.h", "fm1_midi_target.c", "fm1_midi_target.h", "fm1_sha256.c", "fm1_sha256.h", "CMakeLists.txt", "tests/codec.c", "tests/update.c", "tests/update_fake.h", "tests/target.c", "tests/target_fake.h", "tests/policy.c", "tests/sha256.c", "tests/test_image.py"],
+  "sdk": {
+    "repository": "https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK",
+    "commit": "e30b1ee375d1f2993fc23bf92c8b99006a6e5f9d",
+    "distribution": "External build input; not copied into this module",
+    "interfaces": ["include_lib/update/update_loader_download.h", "include_lib/update/update.h", "apps/common/update/update.c", "cpu/wl82/liba/update.a"]
+  },
+  "protocol_reference": {
+    "repository": "https://github.com/m-vave/fm1_open",
+    "commit": "b178ac43c25f010c60a878056fb5331fe693fd62",
+    "use": "Factual framing and loader interoperability audit only; no GPL application or proprietary engine code copied",
+    "proprietary_engine_linked": false
+  },
+  "install_capability_default": false,
+  "hardware_accepted": false,
+  "device_operations_performed": false
+}

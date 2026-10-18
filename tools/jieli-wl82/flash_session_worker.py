@@ -8,11 +8,13 @@ import base64
 import hashlib
 import importlib
 import json
+import queue
 from pathlib import Path
 import re
 import runpy
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -38,9 +40,17 @@ def require(test, message):
 def schema(request):
     require(type(request) is dict, 'Object required')
     op = request.get('op')
-    require(op in ('status', 'environment', 'plan', 'flash', 'retry_flash', 'reset', 'observe', 'enter_uboot'), 'Unknown operation')
-    fields = {'op', 'image', 'sha256', 'baseline_sha256'} if op in ('plan', 'flash', 'retry_flash') else {'op'}
+    require(op in ('status', 'environment', 'plan', 'flash', 'retry_flash', 'recover_flash', 'reset', 'observe', 'serial_status', 'enter_uboot', 'read_firmware'), 'Unknown operation')
+    if op in ('plan', 'flash', 'retry_flash', 'recover_flash'):
+        fields = {'op', 'image', 'sha256', 'baseline_sha256'}
+    elif op == 'read_firmware':
+        fields = {'op', 'loader_state'}
+    else:
+        fields = {'op'}
     require(set(request) == fields, 'Unexpected or missing request fields')
+    if op == 'read_firmware':
+        require(type(request['loader_state']) is str and request['loader_state'] in ('cold', 'reuse'),
+                'Explicit cold or reuse loader state required')
     return op
 
 
@@ -59,6 +69,49 @@ def candidate(request, baseline):
         require(image[start:end] == baseline[start:end],
                 'Candidate changes boot/config/reserved bytes outside the stock application; no device I/O')
     return image, changed[1:] + [0x4000]
+
+
+def recovery_receipt(baseline, image, sectors, receipt):
+    # Keep the original scope even when NOR already contains candidate bytes.
+    # An interrupted read must never become the verified baseline.
+    _, expected = candidate(dict(op='plan', image=base64.b64encode(image).decode(),
+                                 sha256=sha(image), baseline_sha256=sha(baseline)), baseline)
+    require(sectors == expected, 'Recovery sector scope differs from the failed candidate')
+    require(receipt.get('status') == 'failed' and
+            receipt.get('baseline_sha256') == sha(baseline) and
+            receipt.get('candidate_sha256') == sha(image), 'Recovery receipt identity/status mismatch')
+    verified = receipt.get('verified_sectors')
+    require(type(verified) is list and len(verified) <= len(sectors) and
+            verified == [hex(a) for a in sectors[:len(verified)]],
+            'Recovery verified sectors are not the original ordered prefix')
+    current = sectors[len(verified)] if len(verified) < len(sectors) else sectors[-1]
+    require(receipt.get('current_sector') == hex(current), 'Recovery current sector is not next')
+    return len(verified), current
+
+
+def verify_recovery_read(baseline, image, sectors, receipt, current):
+    prefix, uncertain = recovery_receipt(baseline, image, sectors, receipt)
+    require(len(current) == SIZE, 'Recovery read is not the complete flash array')
+    for start, end in ((0, 0x4000), (0x4040, APP_START), (APP_END, SIZE)):
+        require(current[start:end] == baseline[start:end],
+                'Recovery device boot/config/reserved bytes differ from the verified baseline')
+    if prefix == len(sectors):
+        require(current == image, 'Recovery completed-prefix read differs from the candidate')
+    else:
+        verified = set(sectors[:prefix])
+        for address in range(0, SIZE, 4096):
+            actual = current[address:address + 4096]
+            if address in verified:
+                require(actual == image[address:address + 4096],
+                        'Recovery verified sector differs from the candidate')
+            elif address != uncertain:
+                require(actual == baseline[address:address + 4096],
+                        'Recovery untouched sector differs from the baseline')
+            # Only the next unverified erase sector may be partly programmed;
+            # protected bytes sharing that sector were checked above.
+    return dict(current_sha256=sha(current), verified_prefix_sectors=prefix,
+                uncertain_sector=hex(uncertain), complete_flash_read=True,
+                protected_bytes_match=True)
 
 
 def resume_failed_session(root):
@@ -87,7 +140,7 @@ def resume_failed_session(root):
     matches = []
     for path in sorted((root / 'ipc').glob('*.json')):
         req = json.loads(path.read_text(encoding='utf-8-sig'))
-        if req.get('op') in ('flash', 'retry_flash') and req.get('sha256') == receipt['candidate_sha256']:
+        if req.get('op') in ('flash', 'retry_flash', 'recover_flash') and req.get('sha256') == receipt['candidate_sha256']:
             image, sectors = candidate(req, base)
             matches.append((path, image, sectors))
     require(matches, 'Failed candidate request missing from protected history')
@@ -124,12 +177,133 @@ def ps_json(script):
     return json.loads(result.stdout) if result.stdout.strip() else []
 
 
+INVENTORY_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+while ($null -ne ($line = [Console]::ReadLine())) {
+    if ($line -notmatch '^[1-9][0-9]{0,8}$') { exit 2 }
+    $sequence = [int]$line
+    try {
+        $items = @(Get-CimInstance Win32_DiskDrive -ErrorAction Stop |
+            Where-Object {$_.Model -eq 'WL82 UBOOT1.00 USB Device'} |
+            Select-Object DeviceID,PNPDeviceID)
+        $reply = @{id=$sequence; ok=$true; items=$items}
+    } catch {
+        $reply = @{id=$sequence; ok=$false; error='Windows disk inventory failed'}
+    }
+    [Console]::WriteLine(($reply | ConvertTo-Json -Depth 4 -Compress))
+    [Console]::Out.Flush()
+}
+"""
+
+
+class DiskInventory:
+    """One hidden process; every query obtains fresh Windows device metadata.
+
+    No cached identities, command input, automatic restart, or fallback. A lost
+    or invalid response fails the operation and retains its existing latch.
+    """
+    def __init__(self, timeout=15):
+        self.timeout = timeout
+        self.process = None
+        self.sequence = 0
+        self.lock = threading.Lock()
+        self.closed = False
+        self.reader = None
+
+    def query(self):
+        with self.lock:
+            require(not self.closed, 'Disk inventory process is closed')
+            try:
+                if self.process is None:
+                    self.process = subprocess.Popen(
+                        [PS, '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', INVENTORY_SCRIPT],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                        text=True, encoding='utf-8', errors='strict', bufsize=1,
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                require(self.process.poll() is None, 'Disk inventory process exited')
+                self.sequence += 1
+                require(self.sequence <= 999999999, 'Disk inventory request limit exceeded')
+                self.process.stdin.write(str(self.sequence) + '\n')
+                self.process.stdin.flush()
+                result = queue.Queue(maxsize=1)
+                def read_response():
+                    try:
+                        result.put((True, self.process.stdout.readline(65537)))
+                    except Exception as error:
+                        result.put((False, error))
+                reader = threading.Thread(target=read_response, daemon=True)
+                self.reader = reader
+                reader.start()
+                try:
+                    success, line = result.get(timeout=self.timeout)
+                except queue.Empty:
+                    raise TimeoutError('Windows disk inventory timed out') from None
+                if not success:
+                    raise line
+                require(line.endswith('\n') and len(line) <= 65536,
+                        'Disk inventory response missing or too large')
+                reply = json.loads(line)
+                require(type(reply) is dict and type(reply.get('id')) is int
+                        and reply['id'] == self.sequence and type(reply.get('ok')) is bool,
+                        'Invalid disk inventory response')
+                require(reply['ok'], 'Windows disk inventory failed')
+                require(set(reply) == {'id', 'ok', 'items'} and type(reply['items']) is list,
+                        'Invalid disk inventory items')
+                return reply['items']
+            except Exception:
+                # Cleanup must not replace the inventory/identity failure.
+                self.close()
+                raise
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        process = self.process
+        if process is None:
+            return
+        try:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            # This process only inventories metadata. The worker still exits
+            # and its original device-operation failure remains latched.
+            pass
+        finally:
+            if self.reader is not None:
+                self.reader.join(timeout=0.2)
+            for stream in (process.stdin, process.stdout):
+                # TextIOWrapper.close takes the reader's lock. If Windows
+                # could not kill/reap the child, never wait on that lock.
+                if stream is process.stdout and self.reader is not None and self.reader.is_alive():
+                    continue
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+
+_inventory = None
+
+
+def close_inventory():
+    global _inventory
+    if _inventory is not None:
+        _inventory.close()
+        _inventory = None
+
+
 def disk():
-    items = ps_json("@(Get-CimInstance Win32_DiskDrive | Where-Object {$_.Model -eq 'WL82 UBOOT1.00 USB Device'} | Select-Object DeviceID,PNPDeviceID) | ConvertTo-Json -Compress")
-    if isinstance(items, dict):
-        items = [items]
+    global _inventory
+    if _inventory is None:
+        _inventory = DiskInventory()
+    items = _inventory.query()
     require(len(items) == 1, 'Exactly one FM-1 UBOOT disk required')
     item = items[0]
+    require(type(item) is dict and set(item) == {'DeviceID', 'PNPDeviceID'}
+            and all(type(value) is str for value in item.values()), 'Invalid disk identity')
     require(re.fullmatch(r'\\\\\.\\PHYSICALDRIVE[0-9]+', item['DeviceID']) is not None,
             'Unexpected disk path')
     require(item['PNPDeviceID'].startswith('USBSTOR\\DISK&VEN_WL82&PROD_UBOOT1.00&REV_1.00\\'),
@@ -146,15 +320,29 @@ def trusted_local(root=ROOT):
     return value
 
 
+def frozen_runtime(root=ROOT):
+    config = root / 'session.json'
+    if not config.exists():
+        return False
+    value = json.loads(config.read_text(encoding='utf-8-sig')).get('freeze_python_runtime', False)
+    require(type(value) is bool, 'Invalid frozen runtime mode in session descriptor')
+    return value
+
+
 def python_flags():
-    return ['-u'] if trusted_local() else ['-I', '-S', '-u']
+    frozen, trusted = frozen_runtime(), trusted_local()
+    require(not (frozen and trusted), 'Conflicting runtime modes')
+    # An elevated bytecode cache must never introduce user-owned executable
+    # files into the otherwise immutable runtime/dependency snapshot.
+    return ['-u'] if trusted else ['-I', '-S', *(['-B'] if frozen else []), '-u']
 
 
 def environment_info():
     import ctypes
     packages = {name: importlib.import_module(name).__file__
                 for name in ('yaml', 'tqdm', 'crcmod', 'colorama', 'serial')}
-    return {'trusted_local': trusted_local(), 'python': sys.executable,
+    return {'trusted_local': trusted_local(), 'freeze_python_runtime': frozen_runtime(),
+            'dont_write_bytecode': sys.dont_write_bytecode, 'python': sys.executable,
             'isolated': bool(sys.flags.isolated), 'no_site': bool(sys.flags.no_site),
             'elevated': bool(ctypes.windll.shell32.IsUserAnAdmin()) if sys.platform == 'win32' else False,
             'packages': packages, 'device_io': False}
@@ -168,7 +356,9 @@ def execute_cli(device, commands, log, mode='write'):
     with log.open('x', encoding='utf-8') as stream:
         subprocess.run(args, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT,
                        check=True, timeout=60)
-    text = log.read_text(encoding='utf-8')
+    # The child writes raw bytes to the logfile descriptor. Reset output may use
+    # a Windows code page; preserve those bytes and tolerate decoding only here.
+    text = log.read_text(encoding='utf-8', errors='replace' if mode == 'reset' else 'strict')
     require('Key mismatch' not in text and 'ERROR' not in text, 'CLI reported an error')
     if mode == 'load':
         require('The Loader has been successfully installed.' in text and '0x856014' in text,
@@ -214,6 +404,90 @@ def mod_status_progress(transcript):
     return counters[0], counters[-1]
 
 
+def doom_status_values(transcript):
+    required = {'stage','fault','frames','stopped','lcd_stage','lcd_error',
+                'key_error','sys_hz','lsb_hz'}
+    counters = []
+    for line in transcript.splitlines(keepends=True):
+        if not line.startswith('DOOM STATUS ') or not line.endswith('\n'):
+            continue
+        # The diagnostic message is trailing free text, not status fields.
+        prefix = line.split(' error=', 1)[0]
+        fields = re.findall(r'(?<!\S)([a-z_]+)=(-?\d+)(?!\S)', prefix)
+        require(len(fields) == len(required) and {key for key,value in fields} == required,
+                'Incomplete Doom status')
+        counters.append({key:int(value) for key,value in fields})
+    return counters
+
+
+def doom_status_progress(transcript):
+    counters = doom_status_values(transcript)
+    require(counters and not any(values[key] for values in counters
+                                for key in ('fault','lcd_error')),
+            'Doom firmware/LCD error reported or status missing')
+    require(counters[-1]['stage'] == 4 and counters[-1]['stopped'] == 0,
+            'Doom renderer not running')
+    active = [values for values in counters if values['stage'] == 4 and not values['stopped']]
+    require(len(active) >= 2 and active[-1]['frames'] > active[0]['frames'],
+            'Doom frame progress not confirmed')
+    return active[0], active[-1], any(values['key_error'] for values in counters)
+
+
+def forge_status_values(transcript):
+    """Strict bounded diagnostics: keys are hex; counters and fault fields decimal."""
+    required={'ready','running','pending','frames','audio_frames','scans','keys','lcd','fault','input_errors','adc_errors'}
+    samples=[]
+    for line in transcript.splitlines(keepends=True):
+        if not line.startswith('FORGE STATUS ') or not line.endswith('\n'):continue
+        tokens=line.strip().split()[2:]
+        fields={}
+        for token in tokens:
+            match=re.fullmatch(r'([a-z_]+)=(-?[0-9]+|[0-9a-fA-F]{16})',token)
+            require(match is not None,'Incomplete factory status')
+            name,raw=match.groups();require(name not in fields,'Duplicate factory status field')
+            if name=='keys':require(re.fullmatch(r'[0-9a-fA-F]{16}',raw) is not None,'Invalid factory key mask');fields[name]=int(raw,16)
+            else:require(re.fullmatch(r'-?[0-9]+',raw) is not None,'Invalid factory decimal status');fields[name]=int(raw)
+        require(set(fields)==required,'Incomplete factory status')
+        require(all(fields[n] in (0,1) for n in ('ready','running','pending')) and all(fields[n]>=0 for n in ('frames','audio_frames','scans','input_errors','adc_errors')),'Invalid factory status value')
+        samples.append(fields)
+    require(samples,'Factory status missing')
+    return samples
+
+
+def forge_status_progress(transcript):
+    samples=forge_status_values(transcript)
+    require(all(s['ready']==1 and s['running']==1 and s['pending']==0 for s in samples),'Factory diagnostics not running')
+    require(not any(s[n] for s in samples for n in ('lcd','fault','input_errors','adc_errors')),'Factory firmware/peripheral error reported')
+    require(len(samples)>=2 and all(samples[-1][n]>samples[0][n] for n in ('frames','audio_frames','scans')),'Factory LCD/audio/input progress not confirmed')
+    return samples[0],samples[-1]
+
+
+def live_status_samples(transcript, profile):
+    """Parse diagnostics without imposing post-flash boot/idle predicates."""
+    if profile=='FM1-FORGE/1':return forge_status_values(transcript)
+    rules = {
+        'DOOM-FM1/1': ('DOOM STATUS ', {'stage', 'fault', 'frames', 'stopped', 'lcd_stage',
+                                     'lcd_error', 'key_error', 'sys_hz', 'lsb_hz'}),
+        'MOD-EDITOR/1': ('MOD status ', {'ready', 'running', 'dirty', 'export', 'order', 'row',
+                                      'ch', 'sample', 'lcd', 'keys', 'audio', 'frames', 'underruns'}),
+        'MDX-KARAOKE/1': ('MDX running=', {'running', 'pending', 'frames', 'underruns',
+                                        'error', 'lcd', 'keys', 'audio'}),
+        'NES': ('TEST STATUS ', {'ready', 'busy', 'mode', 'dropped', 'frames', 'irqs', 'fault'}),
+    }
+    prefix, required = rules[profile]
+    samples = []
+    for line in transcript.splitlines(keepends=True):
+        if not line.startswith(prefix) or not line.endswith('\n'):
+            continue
+        line = line.split(' error=', 1)[0] if profile == 'DOOM-FM1/1' else line
+        fields = re.findall(r'(?<!\S)([a-z_]+)=(-?\d+)(?!\S)', line)
+        values = {key: int(value) for key, value in fields}
+        require(required <= set(values) and len(fields) == len(values), 'Incomplete live status')
+        samples.append(values)
+    require(samples, 'Live firmware status missing')
+    return samples
+
+
 def serial_action(op, run):
     import serial
     # Enumeration may lag a successful reset. No flash/reset retries here.
@@ -238,13 +512,68 @@ def serial_action(op, run):
                 port.write(b'HELLO\n'); port.flush()
                 reply = capture(port, 1)
                 transcript += reply
+                doom_profile = 'FM1DIAG/1 DOOM-FM1/1 UBOOT=SERIAL COMMIT=BLOCKED' in reply.splitlines()
+                forge_profile = 'FM1DIAG/1 FM1-FORGE/1 UBOOT=SERIAL COMMIT=BLOCKED' in reply.splitlines()
                 if 'FM1DIAG/1' in reply and (re.search(r'\bNES=(?:SMB1|INES)\b',reply) or
                                            'MDX-KARAOKE/1 RAM-UPLOAD UBOOT=SERIAL COMMIT=BLOCKED' in reply or
-                                           'MOD-EDITOR/1 RAM-TRANSFER UBOOT=SERIAL COMMIT=BLOCKED' in reply):
+                                           'MOD-EDITOR/1 RAM-TRANSFER UBOOT=SERIAL COMMIT=BLOCKED' in reply or
+                                           doom_profile or forge_profile):
                     break
             else:
                 raise ValueError('FM-1 serial HELLO not confirmed')
+            if op == 'serial_status':
+                require(len(transcript) <= 65536, 'Live serial transcript exceeded bound')
+                if forge_profile:
+                    profile, command = 'FM1-FORGE/1','FORGE STATUS'
+                elif doom_profile:
+                    profile, command = 'DOOM-FM1/1', 'DOOM STATUS'
+                elif 'MOD-EDITOR/1 RAM-TRANSFER' in reply:
+                    profile, command = 'MOD-EDITOR/1', 'MOD STATUS'
+                elif 'MDX-KARAOKE/1' in reply:
+                    profile, command = 'MDX-KARAOKE/1', 'MDX STATUS'
+                else:
+                    profile, command = 'NES', 'TEST STATUS'
+                observation = ''
+                for _ in range(4):
+                    port.write((command + '\n').encode('ascii')); port.flush()
+                    status = capture(port, 1)
+                    observation += status; transcript += status
+                    require(len(transcript) <= 65536, 'Live serial transcript exceeded bound')
+                # Live playback, edits and reported faults are diagnostic data.
+                # This operation sends no STOP/UBOOT and grants no boot permit.
+                return {'serial_hello_verified': True, 'profile': profile, 'port': name,
+                        'status_command': command,
+                        'samples': live_status_samples(observation, profile),
+                        'transcript': transcript, 'diagnostic_only': True, 'boot_verified': False}
             if op == 'observe':
+                if forge_profile:
+                    observation=''
+                    for _ in range(4):
+                        port.write(b'FORGE STATUS\n');port.flush()
+                        status=capture(port,1);observation+=status;transcript+=status
+                    first,last=forge_status_progress(observation)
+                    return {'serial_hello_verified':True,'profile':'FM1-FORGE/1','port':name,
+                            'frames_first':first['frames'],'frames_last':last['frames'],
+                            'audio_frames_first':first['audio_frames'],'audio_frames_last':last['audio_frames'],
+                            'scans_first':first['scans'],'scans_last':last['scans'],
+                            'physical_display_audio_input_verified':False,'usb_audio_verified':False,
+                            'note':'Serial diagnostics counters only; physical inputs/LCD/audio and USB Audio Class remain bench checks.'}
+                if doom_profile:
+                    observation = ''
+                    for _ in range(4):
+                        port.write(b'DOOM STATUS\n'); port.flush()
+                        status = capture(port, 1)
+                        observation += status; transcript += status
+                    first,last,key_error = doom_status_progress(observation)
+                    return {'serial_hello_verified': True, 'profile': 'DOOM-FM1/1', 'port': name,
+                            'frames_first': first['frames'], 'frames_last': last['frames'],
+                            'stage': last['stage'], 'fault': last['fault'],
+                            'lcd_stage': last['lcd_stage'], 'lcd_error': last['lcd_error'],
+                            'key_error_first': first['key_error'], 'key_error_last': last['key_error'],
+                            'key_error_reported': key_error,
+                            'sys_hz': last['sys_hz'], 'lsb_hz': last['lsb_hz'],
+                            'physical_display_keys_verified': False,
+                            'note': 'Serial renderer/LCD counters only; inspect physical screen and keys.'}
                 if 'MOD-EDITOR/1 RAM-TRANSFER' in reply:
                     for _ in range(4):
                         port.write(b'MOD STATUS\n'); port.flush()
@@ -291,7 +620,26 @@ def serial_action(op, run):
                         'frames_first': frames[0], 'frames_last': frames[-1],
                         'physical_display_audio_verified': False,
                         'note': 'Serial capture only; inspect counters and physical screen/audio.'}
-            if 'MOD-EDITOR/1 RAM-TRANSFER' in reply:
+            if forge_profile:
+                port.write(b'FORGE STOP\n');port.flush();transcript+=capture(port,.7)
+                for _ in range(6):
+                    port.write(b'FORGE STATUS\n');port.flush()
+                    status=capture(port,.7);transcript+=status
+                    samples=forge_status_values(status)
+                    if samples[-1]['running']==0 and samples[-1]['pending']==0:break
+                else:raise ValueError('Factory diagnostics not confirmed stopped')
+            elif doom_profile:
+                port.write(b'DOOM STOP\n'); port.flush()
+                status = capture(port, 2); transcript += status
+                for _ in range(6):
+                    port.write(b'DOOM STATUS\n'); port.flush()
+                    reply = capture(port, .7); status += reply; transcript += reply
+                    counters = doom_status_values(status)
+                    if counters and counters[-1]['stopped'] == 1:
+                        break
+                else:
+                    raise ValueError('Doom renderer not confirmed stopped')
+            elif 'MOD-EDITOR/1 RAM-TRANSFER' in reply:
                 port.write(b'MOD STOP\n'); port.flush()
                 transcript += capture(port, 2)
                 port.write(b'MOD STATUS\n'); port.flush()
@@ -346,27 +694,54 @@ class Session:
             return dict(self.state)
         if op == 'environment':
             return environment_info()
-        if op in ('plan', 'flash', 'retry_flash'):
+        if op == 'serial_status':
+            # The pipe serializes callers. A completed failure may leave its
+            # operation name in state; permit diagnosis without clearing it.
+            require(self.state.get('operation', 'idle') == 'idle' or
+                    (self.state.get('blocked') and self.state.get('failed_operation') and
+                     self.state.get('error')), 'Session operation pending; inspect state before serial status')
+            run = self.root / 'runs' / uuid.uuid4().hex
+            run.mkdir(parents=True)
+            result = serial_action(op, run)
+            return {'result': result, 'log_directory': str(run)}
+        if op == 'read_firmware':
+            require(not self.state.get('reset_pending') and not self.state.get('needs_observation'),
+                    'Verified image still requires reset/observation before firmware read')
+            require(request['loader_state'] != 'cold' or not self.state.get('loader_running'),
+                    'Known RAM helper is running; use reuse or establish a fresh cold UBOOT through the local procedure')
+            base_path = (self.root / self.state['baseline_file']).resolve()
+            require(base_path.is_relative_to(self.root.resolve()), 'Baseline outside protected session')
+            base = base_path.read_bytes()
+            require(len(base) == SIZE and sha(base) == self.state['baseline_sha256'], 'Stored baseline damaged')
+        if op in ('plan', 'flash', 'retry_flash', 'recover_flash'):
             base = (self.root / self.state['baseline_file']).read_bytes()
             require(sha(base) == self.state['baseline_sha256'], 'Stored baseline damaged')
             image, sectors = candidate(request, base)
             if op == 'plan':
                 return {'sha256': sha(image), 'sectors': [hex(x) for x in sectors],
                         'device_io': False, 'blocked': self.state['blocked']}
-        retry = self.state.get('flash_attempt') if op == 'retry_flash' else None
-        if op == 'retry_flash':
+        retry = self.state.get('flash_attempt') if op in ('retry_flash', 'recover_flash') else None
+        if op in ('retry_flash', 'recover_flash'):
             require(self.state['blocked'] and self.state.get('failed_operation') == 'flash'
                     and retry and retry.get('status') == 'failed' and retry.get('target'),
                     'Explicit retry requires a completed failed flash with a recorded target')
             require(retry['sha256'] == sha(image) and retry['baseline_sha256'] == sha(base)
                     and retry['sectors'] == sectors, 'Retry must use the exact failed candidate and original sector scope')
-        require(not self.state['blocked'] or op in ('observe', 'retry_flash'),
+        recovery = None
+        if op == 'recover_flash':
+            source_run = (self.root / retry['run']).resolve()
+            require(source_run.is_relative_to(self.root.resolve()), 'Recovery failure evidence outside session')
+            recovery = json.loads((source_run / 'deployment.json').read_text(encoding='utf-8-sig'))
+            recovery_receipt(base, image, sectors, recovery)
+        require(not self.state['blocked'] or op in ('observe', 'retry_flash', 'recover_flash'),
                 'Session latched after failure; inspect logs and use explicit retry_flash for the same failed image.')
         if op == 'reset':
             require(self.state.get('reset_pending'), 'Reset requires a successful verified flash in this session')
-        if op in ('flash', 'retry_flash'):
+        if op in ('flash', 'retry_flash', 'recover_flash'):
             require(not self.state.get('reset_pending') and not self.state.get('needs_observation'),
                     'Previous verified image has not completed reset/observation')
+            require(not self.state.get('loader_running'),
+                    'Firmware read left a RAM helper running; establish a fresh cold UBOOT through the local power-cycle/CDC procedure before flash')
         run = self.root / 'runs' / uuid.uuid4().hex
         run.mkdir(parents=True)
         self.state['last_run'] = str(run)
@@ -376,12 +751,17 @@ class Session:
         previous_operation = self.state.get('failed_operation')
         self.state['blocked'] = True
         self.save()
+        deployment_started = False
         try:
-            if op in ('flash', 'retry_flash'):
+            if op in ('flash', 'retry_flash', 'recover_flash'):
                 target = disk()
+                baseline_target = self.state.get('baseline_target')
+                if baseline_target:
+                    require(target['PNPDeviceID'] == baseline_target['PNPDeviceID'],
+                            'Verified readback baseline target identity changed')
                 # A replug can change PHYSICALDRIVE numbering; require the same
                 # recorded PNP identity, then pin both values for this attempt.
-                if retry:
+                if retry and op == 'retry_flash':
                     require(target['PNPDeviceID'] == retry['target']['PNPDeviceID'], 'Retry target identity changed')
                 attempt = dict(status='pending', run=str(run.relative_to(self.root)),
                     sha256=sha(image), baseline_sha256=sha(base), sectors=sectors, target=target,
@@ -394,12 +774,26 @@ class Session:
                 require(sha(helper.read_bytes()) == HELPER_SHA, 'Helper hash mismatch')
                 execute_cli(target['DeviceID'], ['help'], run / 'helper.log', 'load')
                 require(disk() == target, 'USB identity changed after helper upload')
+                if op == 'recover_flash':
+                    current_path = run / 'current.bin'
+                    execute_cli(target['DeviceID'], [f'read 0 {SIZE} {current_path}'], run / 'current.log')
+                    require(disk() == target, 'USB identity changed during recovery read')
+                    proof = verify_recovery_read(base, image, sectors, recovery, current_path.read_bytes())
+                    proof.update(previous_target=retry['target'], target=target,
+                                 source_failed_run=retry['run'])
+                    (run / 'recovery-read.json').write_text(json.dumps(proof, indent=2), encoding='utf-8')
+                    attempt['recovery_read'] = proof
+                    (run / 'attempt.json').write_text(json.dumps(attempt, indent=2), encoding='utf-8')
+                    self.save()
                 import deploy_v14_smb1_via_cli as writer
                 def call(device, commands, log):
                     require(disk() == target, 'USB identity changed during write/verify')
                     execute_cli(device, commands, log)
-                # All writes, sector erase/readback, directory-last and final reads
-                # remain the existing implementation. No pre-write device dump.
+                    require(disk() == target, 'USB identity changed after write/verify')
+                # Recovery validates a fresh dump against the interrupted write.
+                # All operations retain the original baseline and sector scope;
+                # erase/readback, directory-last and final verification are unchanged.
+                deployment_started = True
                 result = writer.deploy(target['DeviceID'], run, base, image, call=call,
                     sectors=sectors, verified_preflight=self.root / self.state['baseline_file'], nes_cdc=True)
                 require(result['status'] == 'written_and_readback_verified' and result['full_readback_count'] == 1,
@@ -411,6 +805,44 @@ class Session:
                 (run / 'attempt.json').write_text(json.dumps(attempt, indent=2), encoding='utf-8')
                 self.state.pop('failed_operation', None)
                 self.state.pop('error', None)
+            elif op == 'read_firmware':
+                target = disk()
+                recorded = self.state.get('target')
+                if recorded:
+                    require(target['PNPDeviceID'] == recorded['PNPDeviceID'], 'Firmware read target identity changed')
+                # Mark ownership before any helper/read command. A partial
+                # upload or lost response cannot authorize a later re-upload.
+                self.state['loader_running'] = True
+                self.save()
+                # Inquiry text cannot distinguish cold ROM from a running RAM
+                # helper. The caller must establish cold/reuse from history.
+                # Helper initialization/online can change NOR protection bits,
+                # including in reuse mode; no array erase/program is requested.
+                if request['loader_state'] == 'cold':
+                    helper = ROOT / 'tools/jl-uboot-tool/data/loaderblobs/usb/wl82loader.bin'
+                    require(sha(helper.read_bytes()) == HELPER_SHA, 'Helper hash mismatch')
+                    require(disk() == target, 'USB identity changed before helper upload')
+                    execute_cli(target['DeviceID'], ['help'], run / 'helper.log', 'load')
+                    require(disk() == target, 'USB identity changed after helper upload')
+                reads = []
+                for number in (1, 2):
+                    path = run / f'readback-{number}.bin'
+                    require(disk() == target, 'USB identity changed before firmware read')
+                    execute_cli(target['DeviceID'], [f'read 0 {SIZE} {path}'], run / f'readback-{number}.log')
+                    require(disk() == target, 'USB identity changed after firmware read')
+                    data = path.read_bytes()
+                    require(len(data) == SIZE, 'Short full firmware read')
+                    reads.append(data)
+                require(reads[0] == reads[1] and sha(reads[0]) == sha(reads[1]), 'Firmware reads differ; no export finalized')
+                exported = run / 'firmware.bin'
+                (run / 'readback-1.bin').rename(exported)
+                result = {'sha256': sha(reads[0]), 'size': SIZE, 'readback_count': 2,
+                          'loader_state': request['loader_state'],
+                          'file': str(exported.relative_to(self.root)), 'target': target,
+                          'chip_key_queried': False, 'flash_array_program_or_erase_commands_sent': False,
+                          'reset_requested': False, 'includes_device_configuration': True,
+                          'loader_online_may_change_nor_protection': True}
+                (run / 'firmware.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
             elif op == 'reset':
                 target = disk()
                 require(target == self.state['target'], 'Reset target changed')
@@ -419,14 +851,19 @@ class Session:
                 self.state['reset_pending'] = False
                 self.save()
                 execute_cli(target['DeviceID'], ['reset 1'], run / 'reset.log', 'reset')
+                self.state['loader_running'] = False
                 result = {'reset_command_completed': True, 'boot_verified': False}
             else:
                 result = serial_action(op, run)
                 if op == 'observe':
                     self.state['needs_observation'] = False
+                elif op == 'enter_uboot':
+                    # The supported CDC teardown/arm/confirm establishes a
+                    # newly entered UBOOT session rather than helper reuse.
+                    self.state['loader_running'] = False
             self.state['blocked'] = was_blocked if op == 'observe' else False
             # A reset transport disconnect can be resolved by verified CDC and
-            # advancing NES telemetry, but a failed flash can NEVER be cleared this way.
+            # advancing firmware telemetry, but a failed flash can NEVER be cleared this way.
             if op == 'observe' and previous_operation == 'reset' and not self.state.get('reset_pending'):
                 self.state['blocked'] = False
                 self.state['reset_resolved_by_observation'] = True
@@ -435,12 +872,18 @@ class Session:
             self.save()
             return {'result': result, 'log_directory': str(run)}
         except Exception as error:
-            if op in ('flash', 'retry_flash'):
+            if op in ('flash', 'retry_flash', 'recover_flash'):
                 self.state['failed_operation'] = 'flash'
                 attempt = self.state.get('flash_attempt')
                 if attempt and attempt['run'] == str(run.relative_to(self.root)):
                     attempt['status'] = 'failed'
                     (run / 'attempt.json').write_text(json.dumps(attempt, indent=2), encoding='utf-8')
+                    if op == 'recover_flash' and not deployment_started:
+                        # No NOR write was attempted. Retain the original
+                        # failure evidence and this rejected preflight separately.
+                        self.state['recovery_preflight_attempt'] = attempt
+                        self.state['flash_attempt'] = retry
+                        self.state['target'] = retry['target']
                 (run / 'failure.json').write_text(json.dumps({'error': f'{type(error).__name__}: {error}',
                     'operation': op, 'retry_of': retry['run'] if retry else None}), encoding='utf-8')
             # Preserve the original flash failure across later observation errors.
@@ -468,6 +911,8 @@ def main():
         result = {'ok': True, 'data': Session().handle(request)}
     except Exception as error:
         result = {'ok': False, 'error': f'{type(error).__name__}: {error}'}
+    finally:
+        close_inventory()
     print(json.dumps(result))
 
 

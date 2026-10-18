@@ -41,3 +41,4 @@ venv/
 
 # Reproducible original instrument bank used by the tracker host tests.
 !/firmware/protracker/samples/FM1START.MOD
+!/firmware/protracker/samples/FM1BREAK.MOD

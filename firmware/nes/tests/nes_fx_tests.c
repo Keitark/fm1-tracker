@@ -47,6 +47,124 @@ static void bypass_and_partition(void) {
     CHECK(!a.wet && !memcmp(in,out,sizeof(in)));
     c.mode=1;c.mix=0;CHECK(!fm1_fx_process(&a,&c,in,out,64) && !memcmp(in,out,sizeof(in)));
 }
+static void prepared_and_partition(void) {
+    fm1_fx_state regular,prepared,split;fm1_fx_controls c;
+    int16_t in[64],expected[64],actual[64],partition[64];unsigned block,i;
+    uint32_t random=79;
+    fm1_fx_controls_reset(&c);fm1_fx_reset(&regular);prepared=split=regular;
+    for(block=0;block<1200;++block) {
+        /* Exercise rate changes, bypass, fades between all topologies and all
+           control ranges while each render consumes the same sample stream. */
+        c.mode=(uint8_t)((block/19)%4);c.cutoff=(uint8_t)(block%128);
+        c.resonance=(uint8_t)((block*13)%128);c.rate=(uint8_t)((block/7)%128);
+        c.depth=(uint8_t)((block*17)%128);c.mix=(uint8_t)((block*23)%128);
+        for(i=0;i<64;++i){random=random*1664525u+1013904223u;in[i]=(int16_t)(random>>16);}
+        CHECK(!fm1_fx_prepare(&prepared,&c) && !fm1_fx_prepare(&split,&c));
+        CHECK(!fm1_fx_process(&regular,&c,in,expected,64));
+        memcpy(actual,in,sizeof(actual));
+        CHECK(!fm1_fx_process_prepared(&prepared,&c,actual,actual,64));
+        for(i=0;i<64;++i)CHECK(!fm1_fx_process_prepared(&split,&c,in+i,partition+i,1));
+        CHECK(!memcmp(expected,actual,sizeof(actual)) && !memcmp(actual,partition,sizeof(actual)));
+        CHECK(!memcmp(&regular,&prepared,sizeof(regular)) && !memcmp(&prepared,&split,sizeof(prepared)));
+    }
+    {
+        fm1_fx_state before=prepared;
+        CHECK(!fm1_fx_process_prepared(&prepared,&c,0,0,0));
+        CHECK(!memcmp(&before,&prepared,sizeof(before)));
+    }
+    /* Preparation changes only the cached increment/rate, with exact original
+       quantization at every supported rate. */
+    for(i=0;i<128;++i) {
+        fm1_fx_state expected_state=prepared;c.rate=(uint8_t)i;
+        expected_state.phase_increment=(uint32_t)(((uint64_t)(i+1u)*10u<<32)/4410000u);
+        expected_state.rate_cache=c.rate;
+        CHECK(!fm1_fx_prepare(&prepared,&c));
+        CHECK(!memcmp(&expected_state,&prepared,sizeof(prepared)));
+    }
+}
+static void rejected_inputs_atomic(void) {
+    fm1_fx_controls c,invalid;fm1_fx_state state,before;
+    int16_t in[64]={0},out[64],saved[64];unsigned field;
+    fm1_fx_controls_reset(&c);fm1_fx_reset(&state);
+    memset(out,0x5a,sizeof(out));memcpy(saved,out,sizeof(out));before=state;
+    CHECK(fm1_fx_process_prepared(&state,&c,in,out,64)<0);
+    CHECK(fm1_fx_process_prepared(&state,&c,0,0,0)<0);
+    CHECK(!memcmp(&state,&before,sizeof(state)) && !memcmp(out,saved,sizeof(out)));
+    CHECK(!fm1_fx_prepare(&state,&c));before=state;c.rate++;
+    CHECK(fm1_fx_process_prepared(&state,&c,in,out,64)<0);
+    CHECK(!memcmp(&state,&before,sizeof(state)) && !memcmp(out,saved,sizeof(out)));
+    CHECK(fm1_fx_process(&state,&c,0,out,64)<0);
+    CHECK(fm1_fx_process(&state,&c,in,0,64)<0);
+    CHECK(fm1_fx_process(&state,&c,in,out,65)<0);
+    CHECK(!memcmp(&state,&before,sizeof(state)) && !memcmp(out,saved,sizeof(out)));
+    c.rate--;CHECK(fm1_fx_process_prepared(&state,&c,0,out,64)<0);
+    CHECK(fm1_fx_process_prepared(&state,&c,in,0,64)<0);
+    CHECK(fm1_fx_process_prepared(&state,&c,in,out,65)<0);
+    CHECK(fm1_fx_prepare(0,&c)<0 && fm1_fx_prepare(&state,0)<0);
+    CHECK(fm1_fx_process_prepared(0,&c,in,out,64)<0);
+    CHECK(fm1_fx_process_prepared(&state,0,in,out,64)<0);
+    CHECK(!memcmp(&state,&before,sizeof(state)) && !memcmp(out,saved,sizeof(out)));
+    for(field=0;field<6;++field) {
+        invalid=c;
+        switch(field) {
+        case 0:invalid.mode=4;break;case 1:invalid.cutoff=128;break;
+        case 2:invalid.resonance=128;break;case 3:invalid.rate=128;break;
+        case 4:invalid.depth=128;break;default:invalid.mix=128;break;
+        }
+        CHECK(fm1_fx_prepare(&state,&invalid)<0);
+        CHECK(fm1_fx_process(&state,&invalid,in,out,64)<0);
+        CHECK(fm1_fx_process_prepared(&state,&invalid,in,out,64)<0);
+        CHECK(!memcmp(&state,&before,sizeof(state)) && !memcmp(out,saved,sizeof(out)));
+    }
+}
+static int32_t reference_limit(int32_t v,uint32_t *limited) {
+    if(v>8388352){++*limited;return 8388352;}
+    if(v<-8388352){++*limited;return -8388352;}
+    return v;
+}
+static void check_reference_products(fm1_fx_state state,fm1_fx_controls c,int16_t input) {
+    fm1_fx_state before;int16_t actual;int32_t low,high,band,filtered;uint32_t limited;
+    CHECK(!fm1_fx_prepare(&state,&c));before=state;
+    CHECK(!fm1_fx_process_prepared(&state,&c,&input,&actual,1));
+    limited=before.limited;
+    /* Independent64-bit oracle exercises the production split products in
+       all three filter updates, including signed division toward zero. */
+    low=reference_limit(before.low+(int32_t)(((int64_t)state.frequency*before.band)/4096),&limited);
+    high=reference_limit((int32_t)input*256-low-(int32_t)(((int64_t)state.damping*before.band)/4096),&limited);
+    band=reference_limit(before.band+(int32_t)(((int64_t)state.frequency*high)/4096),&limited);
+    filtered=(c.mode==FM1_FX_LP?low:c.mode==FM1_FX_BP?band:high)/256;
+    CHECK(state.low==low && state.band==band && state.limited==limited && actual==filtered);
+}
+static void exact_product_reference(void) {
+    static const int32_t states[]={-8388352,-8388351,-8384513,-8384512,-8191,-4097,-4096,-4095,-1,
+        0,1,4095,4096,4097,8191,8384512,8384513,8388351,8388352};
+    static const int16_t samples[]={INT16_MIN,-1,0,1,INT16_MAX};
+    fm1_fx_controls c;fm1_fx_state s;unsigned mode,i,j,k,coefficient;uint32_t random=953;
+    fm1_fx_controls_reset(&c);c.mix=127;c.depth=0;
+    /* Every supported damping coefficient, both possible smoothing directions,
+       and both coefficient/state extrema and Q12 truncation boundaries. */
+    for(coefficient=1023;coefficient<=7373;++coefficient)for(i=0;i<sizeof(states)/sizeof(states[0]);++i) {
+        fm1_fx_reset(&s);c.mode=FM1_FX_LP;c.cutoff=(uint8_t)(coefficient%128);
+        c.resonance=(uint8_t)((coefficient&1)?0:127);
+        s.mode=c.mode;s.wet=256;s.low=states[(i+7)%19];s.band=states[i];
+        s.frequency=(coefficient&1)?47:2857;s.damping=(int32_t)coefficient;
+        check_reference_products(s,c,samples[i%5]);
+    }
+    for(mode=1;mode<=3;++mode)for(i=0;i<19;++i)for(j=0;j<19;++j)for(k=0;k<5;++k) {
+        fm1_fx_reset(&s);c.mode=(uint8_t)mode;c.cutoff=(uint8_t)((i&1)?0:127);
+        c.resonance=(uint8_t)((j&1)?0:127);s.mode=c.mode;s.wet=256;
+        s.low=states[i];s.band=states[j];s.frequency=(i&1)?47:2857;s.damping=(j&1)?1023:7373;
+        check_reference_products(s,c,samples[k]);
+    }
+    for(i=0;i<100000;++i) {
+        fm1_fx_reset(&s);c.mode=(uint8_t)(1+i%3);s.mode=c.mode;s.wet=256;
+        random=random*1664525u+1013904223u;s.low=(int32_t)(random%16776705u)-8388352;
+        random=random*1664525u+1013904223u;s.band=(int32_t)(random%16776705u)-8388352;
+        random=random*1664525u+1013904223u;s.frequency=47+(int32_t)(random%2811u);c.cutoff=(uint8_t)(random%128);
+        random=random*1664525u+1013904223u;s.damping=1023+(int32_t)(random%6351u);c.resonance=(uint8_t)(random%128);
+        check_reference_products(s,c,(int16_t)(random>>16));
+    }
+}
 static double tone(unsigned mode,unsigned res,double hz) {
     fm1_fx_controls c;fm1_fx_state s;unsigned block,i;int16_t in[64],out[64];double energy=0;
     fm1_fx_controls_reset(&c);fm1_fx_reset(&s);c.mode=(uint8_t)mode;c.cutoff=55;c.resonance=(uint8_t)res;
@@ -92,7 +210,8 @@ static void modulation_and_bounds(void) {
     }
 }
 int main(void) {
-    clock_t start=clock();controls();bypass_and_partition();response();modulation_and_bounds();
-    printf("PASS live FX: mappings, exact bypass, partition invariance, filter response, LFO, extreme bounds (host %.3fs)\n",
+    clock_t start=clock();controls();bypass_and_partition();prepared_and_partition();rejected_inputs_atomic();
+    exact_product_reference();response();modulation_and_bounds();
+    printf("PASS live FX: mappings, prepared equivalence, atomic rejection,64-bit product oracle, exact bypass, partition invariance, filter response, LFO, extreme bounds (host %.3fs)\n",
         (double)(clock()-start)/CLOCKS_PER_SEC);return 0;
 }

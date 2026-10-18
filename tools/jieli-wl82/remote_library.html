@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>FM1 Forge · Add local set</title>
+<style>
+:root{color-scheme:dark;font:15px system-ui;background:#080b0a;color:#edf7f1}body{margin:0;padding:28px}main{max-width:760px;margin:auto}h1{font-size:26px}p{line-height:1.6;color:#b7c7bd}.box{border:1px solid #4c6256;background:#111713;border-radius:14px;padding:20px;margin:18px 0}label{display:block;margin:14px 0}input,button{font:inherit;color:inherit;background:#17231c;border:1px solid #658c74;border-radius:7px;padding:10px}input[type=text]{box-sizing:border-box;width:100%}button{cursor:pointer;background:#a0e6c1;color:#092817;font-weight:650}button:disabled{opacity:.45;cursor:default}.pick{display:flex;gap:12px;flex-wrap:wrap}.pick label{margin:0;flex:1}input[type=file]{width:100%;box-sizing:border-box}ul{padding-left:20px}li{padding:8px 0;overflow-wrap:anywhere}small{display:block;color:#b7c7bd}#message{white-space:pre-line;overflow-wrap:anywhere}#message[data-error=true]{color:#ffb7b7}#add{margin-top:12px}code{font-size:12px}strong{color:#a0e6c1}
+</style></head><body><main>
+<h1>FM1 Forge · Add local set</h1><p>Choose exported FM1 catalog bundles from this computer. Firmware stays in the laptop library. Adding a set does not connect to or program FM1.</p>
+<section class="box" aria-label="Local set import"><div class="pick"><label>Choose bundle files<input id="files" type="file" accept=".json,application/json" multiple></label><label>Or choose a package folder<input id="folder" type="file" webkitdirectory multiple></label></div><p>Use 1–8 bundle JSON files, each up to 1.5 MB. Loose firmware, source folders, ROMs and music require an exported catalog bundle first.</p><label>Set name<input id="name" type="text" maxlength="80" placeholder="My FM1 apps" autocomplete="off"></label><h2>Review selected apps</h2><ul id="members"><li>No bundles selected.</li></ul><button id="add" disabled>Add set to library</button></section>
+<section class="box" aria-live="polite"><p id="message">Opening the local import session…</p></section><p>After adding a set, return to FM1 Forge and refresh the Apps Library. Packages still need to match your verified device baseline before transfer.</p>
+</main><script>
+'use strict';
+const token = location.hash.slice(1);
+history.replaceState(null, '', location.pathname);
+const $ = id => document.getElementById(id);
+let bundles = [], validSession = /^[A-Za-z0-9_-]{43}$/.test(token), busy = false, generation = 0;
+const message = (text, error = false) => { $('message').textContent = text; $('message').dataset.error = String(error); };
+const eligible = () => { $('add').disabled = busy || !validSession || !bundles.length || !/^[^\x00-\x1f\x7f]{1,80}$/.test($('name').value.trim()); };
+message(validSession ? 'Choose files or a folder, review the apps, then add the set. This session expires after five minutes.' : 'This import session is unavailable. Open Add local set again from FM1 Forge.', !validSession);
+const keys = (value, expected) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).sort().join('|') === expected.slice().sort().join('|');
+async function choose(list, folder) {
+  const current = ++generation; bundles = []; eligible(); $('members').replaceChildren();
+  try {
+    const files = Array.from(list).filter(file => /\.json$/i.test(file.name));
+    if (files.length < 1 || files.length > 8) throw Error('Choose 1–8 exported bundle JSON files.');
+    if (files.some(file => file.size > 1500000) || files.reduce((sum, file) => sum + file.size, 0) > 12 * 1024 * 1024) throw Error('Selected bundles exceed the size limit.');
+    const selected = [], ids = new Set();
+    for (const file of files) {
+      const bundle = JSON.parse(await file.text());
+      if (!keys(bundle, ['id','profile','title','description','variant','request']) || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(bundle.id) || !['diagnostics','nes','doom','mdx','buddha','protracker'].includes(bundle.profile)) throw Error('One selected file is not an exported FM1 bundle.');
+      for (const [key, limit] of [['title',80],['description',500],['variant',120]]) if (typeof bundle[key] !== 'string' || bundle[key].length < 1 || bundle[key].length > limit || /[\x00-\x1f\x7f]/.test(bundle[key])) throw Error('Bundle display metadata is invalid.');
+      const request = bundle.request;
+      if (!keys(request,['op','image','sha256','baseline_sha256']) || request.op !== 'plan' || typeof request.image !== 'string' || request.image.length !== 1398104 || !/^[0-9a-f]{64}$/.test(request.sha256) || !/^[0-9a-f]{64}$/.test(request.baseline_sha256)) throw Error('Bundle firmware metadata is invalid.');
+      if (ids.has(bundle.id)) throw Error('Selected bundles have duplicate catalog IDs.');
+      ids.add(bundle.id); selected.push(bundle);
+    }
+    if (current !== generation) return;
+    bundles = selected;
+    if (!$('name').value.trim() && folder && files[0].webkitRelativePath) $('name').value = files[0].webkitRelativePath.split('/')[0].slice(0,80);
+    for (const bundle of bundles) {
+      const row = document.createElement('li'), title = document.createElement('strong'), detail = document.createElement('small');
+      title.textContent = bundle.title + ' · ' + bundle.variant;
+      detail.textContent = bundle.id + ' · ' + bundle.profile + ' · SHA256 ' + bundle.request.sha256;
+      row.append(title,detail); $('members').append(row);
+    }
+    message('Review the set name and ' + bundles.length + ' selected app(s). The local service verifies every package before saving.');
+  } catch (error) {
+    if (current !== generation) return;
+    bundles = []; message(error instanceof SyntaxError ? 'A selected JSON file is invalid.' : error.message, true);
+  }
+  eligible();
+}
+$('files').addEventListener('change', event => { $('folder').value = ''; choose(event.target.files, false); });
+$('folder').addEventListener('change', event => { $('files').value = ''; choose(event.target.files, true); });
+$('name').addEventListener('input', eligible);
+$('add').addEventListener('click', async () => {
+  if ($('add').disabled) return;
+  busy = true; eligible(); message('Validating and adding the complete set…');
+  try {
+    const response = await fetch('/v1/library/sets', {method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer ' + token},body:JSON.stringify({name:$('name').value.trim(),bundles}),cache:'no-store',credentials:'omit',redirect:'error'});
+    const result = await response.json();
+    if (!response.ok || result.ok !== true) { if (response.status === 401) validSession = false; throw Error(result.error || 'Local import failed.'); }
+    validSession = false; bundles = [];
+    message('Added “' + result.data.name + '” with ' + result.data.members.length + ' app(s).\nSet ID: ' + result.data.id + '\nReturn to FM1 Forge and refresh the library. No device I/O.');
+  } catch (error) { message(error instanceof TypeError ? 'The service response was unavailable. Check the Forge library before opening a new import session.' : error.message, true); }
+  finally { busy = false; eligible(); }
+});
+</script></body></html>

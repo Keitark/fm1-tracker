@@ -19,13 +19,20 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = Path(__file__).resolve().parents[3]
 OUTPUT = ROOT / "firmware/protracker/preview"
 BUILD = ROOT / "firmware/protracker/build/host"
-SONG = ROOT / "private-library/MOD/STATEART.MOD"
+SONG = ROOT / "firmware/protracker/samples/FM1BREAK.MOD"
+BANK = ROOT / "firmware/protracker/samples/FM1BREAK.FMB"
 CAPTION = "Offline firmware render; physical FM-1 test pending."
 SCREENS = {
     "playing-song": "PLAY SONG",
     "edit-audition": "EDIT / AUDITION",
     "write-note": "WRITE NOTE",
-    "write-sample-parameters": "WRITE / SAMPLE PARAMETERS",
+    "write-sample": "WRITE / SAMPLE FIELD",
+    "write-effect": "WRITE / EFFECT FIELD",
+    "write-param": "WRITE / PARAM FIELD",
+    "block-selection": "VISIBLE BLOCK SELECTION",
+    "song-arranger": "SONG ORDER ARRANGER",
+    "bank-audition": "ACTIVE BANK / AUDITION",
+    "quick-sample": "QUICK SAMPLE / BIND FEEDBACK",
     "sample-list": "SAMPLE LIST",
     "usb-file-chooser": "USB FILE CHOOSER",
     "playing-pattern": "PATTERN LOOP",
@@ -52,8 +59,8 @@ def label_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     return ImageFont.truetype(str(font), size) if font.exists() else ImageFont.load_default()
 
 
-def contact_sheet(screens: dict[str, Image.Image], output: Path) -> None:
-    keys = ("playing-song", "edit-audition", "write-note", "write-sample-parameters")
+def contact_sheet(screens: dict[str, Image.Image], output: Path,
+                  keys: tuple[str, ...], filename: str) -> None:
     side, gap, heading, footer = 720, 32, 52, 70
     width = side * 2 + gap * 3
     height = (side + heading) * 2 + gap * 3 + footer
@@ -67,12 +74,13 @@ def contact_sheet(screens: dict[str, Image.Image], output: Path) -> None:
         sheet.paste(screens[key].resize((side, side), Image.Resampling.NEAREST),
                     (x, y + heading))
     pen.text((gap, height - footer + 12), CAPTION, fill="#bcc6d3", font=small)
-    sheet.save(output / "fm1-tracker-screens.png")
+    sheet.save(output / filename)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--song", type=Path, default=SONG)
+    parser.add_argument("--bank", type=Path, default=BANK)
     parser.add_argument("--output", type=Path, default=OUTPUT)
     parser.add_argument("--build", type=Path, default=BUILD)
     parser.add_argument("--no-build", action="store_true")
@@ -87,8 +95,8 @@ def main() -> None:
     if executable is None:
         raise FileNotFoundError(f"mod_view_preview executable missing in {build}")
     output.mkdir(parents=True, exist_ok=True)
-    result = run([str(executable), str(song), str(output)])
-    fields = ("page", "running", "write", "sample_mode", "order", "row", "channel", "sample")
+    result = run([str(executable), str(song), str(output), str(args.bank.resolve())])
+    fields = ("page", "running", "write", "field", "order", "row", "channel", "sample", "arranger", "bank")
     states = {}
     for line in result.stdout.splitlines():
         parts = line.split("\t")
@@ -112,18 +120,20 @@ def main() -> None:
         image.resize((720, 720), Image.Resampling.NEAREST).save(output / f"{key}-3x.png")
         states[key]["sha256"] = sha256(output / f"{key}.png")
         screens[key] = image
-    contact_sheet(screens, output)
+    contact_sheet(screens, output, ("playing-song", "edit-audition", "write-note", "write-param"), "fm1-tracker-screens.png")
+    contact_sheet(screens, output, ("block-selection", "song-arranger", "bank-audition", "quick-sample"), "fm1-tracker-workflow.png")
     manifest = {
         "description": CAPTION,
         "renderer": "firmware/protracker/view.c",
         "renderer_sha256": sha256(ROOT / "firmware/protracker/view.c"),
         "mod_sha256": sha256(song),
+        "bank_sha256": sha256(args.bank.resolve()),
         "geometry": [240, 240],
         "lcd_format": "RGB444 (upper bits truncated from RGB565)",
         "states": states,
     }
     (output / "preview-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n",
-                                                encoding="utf-8")
+                                                encoding="utf-8", newline="\n")
     print(output / "fm1-tracker-screens.png")
 
 

@@ -1,5 +1,160 @@
 # FM-1 once-elevated flashing session
 
+## Frozen Python runtime
+
+`-FreezePythonRuntime` copies the reviewed existing Python runtime and required
+packages into the new protected session. It does not repair the shared Python
+installation, install packages, or enable trusted-local mode. The session uses
+its fixed copied interpreter with `-I -S`; imports and native dependencies must
+resolve from the protected snapshot or Windows system locations. Do not combine
+this option with `-TrustedLocal`.
+
+Prepare the manifest offline with an explicitly selected verified baseline:
+
+```powershell
+.\tools\jieli-wl82\start-flash-session.ps1 -FreezePythonRuntime -PrepareOnly `
+    -Baseline '<verified full readback>' -BaselineSha256 '<64 lowercase hex>'
+```
+
+`-PrepareOnly` validates inputs and records hashes without UAC, helper startup,
+runtime self-test, or device I/O. Remove only `-PrepareOnly` for local startup:
+after UAC the bootstrap validates and protects the snapshot, then checks the
+isolated runtime before opening the broker. A successful status exchange proves
+broker readiness. The runtime self-test proves imports and isolation, not USB,
+serial, loader, firmware contents, or physical-device readiness.
+
+A historical readback and matching receipt remain historical evidence. Establish
+that they belong to the connected unit and still describe its firmware before
+using them for switching; obtain the supported verified readback when that
+relationship is uncertain. Startup does not select firmware, flash, reset,
+replace an existing session or clear failure latches. Ordinary startup retains
+its selected deployment-backed baseline; the explicit verified-read migration
+below can select a newly verified readback as the new session's baseline.
+Retain old snapshots and receipts. If startup fails, inspect its recorded root
+and PID before considering another launch; never retry an uncertain device job.
+
+## Resume a verified double-read session
+
+`-ResumeVerifiedReadSession` creates a new protected snapshot from an explicitly
+selected protected source. It requires an idle, unblocked source with no pending
+reset, failure, write or observation gate, and retained `loader_running:true`.
+Its saved latest read result must exactly match `firmware.json`, both full
+1 MiB readbacks and their SHA-256. The read receipt must record two equal reads,
+no key query, no array program/erase and no requested reset. The original
+baseline and its verified deployment receipt remain required provenance.
+Trusted-local sources and baseline overrides are rejected.
+
+First inspect and prepare the selected source without stopping it:
+
+```powershell
+$verifiedReadSource = '<explicit protected source root>'
+.\tools\jieli-wl82\start-flash-session.ps1 -FreezePythonRuntime `
+    -ResumeVerifiedReadSession $verifiedReadSource -PrepareOnly
+```
+
+PrepareOnly performs file, ownership/ACL, reparse and hash checks; it performs
+no IPC, UAC, helper startup, runtime self-test or device I/O. After those checks
+and review pass, explicitly quit that source through its existing client:
+
+```powershell
+.\tools\jieli-wl82\flash-session-client.ps1 -SessionRoot $verifiedReadSource -Operation quit
+```
+
+Wait for the recorded helper PID to exit. Actual migration requires matching
+descriptor/ready PID evidence and a stopped timestamp after the retained
+records. A structured stopped marker, when present, must identify that helper
+and an explicit quit. Legacy timestamp-only markers retain the matching PID
+and absence checks; they are not independent proof of device state. Then start
+the new snapshot with the same explicit source:
+
+```powershell
+.\tools\jieli-wl82\start-flash-session.ps1 -FreezePythonRuntime `
+    -ResumeVerifiedReadSession $verifiedReadSource
+```
+
+This launch revalidates the stopped source, pins every selected evidence hash
+before UAC and verifies the copied bytes before publishing readiness. It
+preserves original state, receipts and old/new images under `readback-source/`.
+The promoted baseline is accompanied by `baseline-readback.json`; it does not
+fabricate a deployment receipt. Retain the original stopped session as well.
+
+The new state retains `loader_running:true` and pins `baseline_target` to the
+read receipt's target. Startup does not establish fresh cold UBOOT or authorize
+flashing. Use the existing local cold-UBOOT procedure before any approved write;
+never edit the loader gate away. Before the first flash helper command, the
+worker requires the same recorded PnP target identity. A changed disk number
+after replug is allowed only with that matching identity. This pin is a local
+continuity check, not proof of a globally unique hardware serial number.
+
+Lineage support is deliberately limited to the original deployment-backed
+source schema. This path does not recursively migrate a previously promoted
+read baseline or recover a failed writer. Current-unit provenance, intervening
+writes, USB readiness and physical acceptance still require separate bench
+evidence; an offline migration or successful startup cannot establish them.
+
+## Live setup acceptance, 2026-10-10
+
+The tested source checkpoint `47a43f2` passed **99 focused tests**. One private
+profile fixture was excluded; the full private writer-fixture suite was not
+run. These counts describe the focused checks, not full writer acceptance.
+
+The isolated helper at
+`C:\Program Files\FM1FlashSession-53b32bdc8a444cdda6c838934831e49c`
+was live as PID **240396**, using the frozen runtime with
+`trusted_local:false`. Parent and child runtime proofs both passed with
+`device_io:false`. The previous verified-read source
+`C:\Program Files\FM1FlashSession-eb9a44433bae4d098a50aa178e80e011`
+was cleanly quit; PID **404572** was absent and its `stopped.txt` retained.
+These roots and PIDs are dated evidence, not future launcher defaults.
+
+Two actual, equal **1 MiB** device readbacks established the adopted baseline:
+`c719cad560ddcbc05a795cb77e11d65eeb108e1dfdb76afb508d71533437bf1f`.
+The original evidence was preserved under `readback-source/`, and the original
+historical baseline was retained. The new baseline has a readback receipt,
+not a fabricated firmware-deployment receipt.
+
+After the user's physical power-cycle, the supported serial-to-UBOOT
+transition completed. The new helper reported idle, unblocked,
+`loader_running:false` and `reset_pending:false`, with the baseline target
+guard retained. No array erase/program, actual firmware flash or vendor
+SysEx transfer was performed. This accepts isolated setup, readback adoption
+and the mode transition; it does not establish a selected app's write,
+startup, screen, audio or control acceptance.
+
+The attached native plugin subsequently completed the NES offline plan as
+job `427b240eda7c4867b403aee8f8838682`. Inspecting that same ID returned
+`status:succeeded`, `result.ok:true`, `device_io:false` and `blocked:false`.
+It planned 96 sectors while write, full-readback and boot-verification progress
+remained false. This establishes the attached helper's offline planning path;
+it does not perform or approve a firmware write.
+
+## Doom support, 2026-10-05
+
+The current broker recognizes the Doom CDC identity
+`FM1DIAG/1 DOOM-FM1/1 UBOOT=SERIAL COMMIT=BLOCKED`.
+`observe` polls `DOOM STATUS` and requires stage 4, no engine/LCD fault and
+advancing frame counters. Key-scanner errors are reported separately;
+physical LCD and key operation still need observation.
+`enter_uboot` sends `DOOM STOP`, waits for completed peripheral shutdown, then
+uses the existing guarded `UBOOT`/confirmation handshake.
+
+The app input adapter lives in the sibling `fm1-doom` repository. It prepares
+the existing writer request from a validated plain `app.bin` and a protected
+session's verified current readback. The writer schema, preserved partitions
+and changed-sector policy are unchanged.
+
+Reset logs preserve original bytes and decode with replacement only for display
+and error checks. Write/load logs remain strict UTF-8. Error markers and failed
+exit codes still reject the operation, and reset remains a single attempt.
+
+Verification: display tests 2/2; focused Doom/serial/reset contracts 9/9. The
+complete broker suite is 30/31: its existing current-MOD regeneration test
+rejects a stale `usb-diag/app_main.c` hash in a saved build manifest.
+This is a local artifact freshness failure, not a failed Doom protocol test.
+
+Refs [board issue #4](https://github.com/Keitark/fm1-tracker/issues/4) and
+[Doom issue #1](https://github.com/Keitark/fm1-doom/issues/1).
+
 Status (2026-09-29): the explicit retry extension has now completed a physical
 same-image retry with52 sector checks, one full readback, reset and successful
 serial observation. No device operation was issued while implementing it;
@@ -10,8 +165,8 @@ mode now checks this before asking for UAC.
 
 ## Runtime modes
 
-The user explicitly approved **trusted-local mode** for this personal bench.
-Start with `-TrustedLocal`: the same-account elevated helper reuses
+The historical bench sessions below used explicitly approved **trusted-local
+mode**. With `-TrustedLocal`, the same-account elevated helper reuses
 `C:\Python311\python.exe` and normal installed/user-site packages in place.
 It preserves the launching process's PATH and selected Python configuration
 variables, omits `-I -S`, and does not clone dependencies, change Python ACLs,
@@ -26,7 +181,8 @@ not a hardened security boundary against other software under your account.
 Close the broker when finished. `environment` reports the active interpreter,
 package locations, elevation and Python isolation flags without device access.
 
-Without `-TrustedLocal`, the following stricter runtime gate remains:
+Without `-TrustedLocal` or `-FreezePythonRuntime`, the following stricter shared
+runtime gate remains:
 
 `C:\Python311\python.exe`, `Lib`, and `DLLs` have write/modify ACEs for
 Authenticated Users (`S-1-5-11`), even though the installation root is protected.
@@ -55,7 +211,9 @@ edit or helper replacement. Older protected snapshots need replacement once.
   bootstrap validates those exact bytes, creates a unique protected directory
   under `C:\Program Files\FM1FlashSession-<id>`, and copies the existing writer,
   deployment orchestrator, WL82 helper and broker code. Hardened mode also copies
-  installed dependencies; trusted-local mode uses existing packages in place.
+  installed dependencies; `-FreezePythonRuntime` additionally copies the
+  interpreter and standard library. Trusted-local mode uses existing packages
+  in place.
 - Normal user has read/execute access to the session snapshot/logs; only
   Administrators and SYSTEM can alter them. In hardened mode, no privileged
   import is made from the workspace or user's site-packages: Python uses
@@ -224,16 +382,19 @@ use its `flash/final-2.bin` and full hash
 The original `c60b423b...` default is now obsolete for this device; always supply
 the actual current baseline when restarting.
 
-Start once from the existing PowerShell environment:
+For a new session, prefer the frozen runtime and supply a verified baseline
+whose relationship to this unit has been established locally:
 
 ```powershell
-.\tools\jieli-wl82\start-flash-session.ps1 -TrustedLocal
+.\tools\jieli-wl82\start-flash-session.ps1 -FreezePythonRuntime `
+    -Baseline '<verified full readback>' -BaselineSha256 '<64 lowercase hex>'
 ```
 
 It prints the protected session root. Set `$fm1Session` to that **actual** path.
-By default it seeds the saved twice-verified `c60b423b...` image. If the device
-has been flashed since, pass `-Baseline <final-2.bin> -BaselineSha256 <hash>`
-from the actual most recent verified deployment. Receipt/hash/size are checked.
+The old default seeds the saved twice-verified `c60b423b...` image; it is
+historical and should not be selected implicitly. Always pass the baseline path
+and hash from the appropriate most recent verified deployment. Receipt/hash/size
+are checked, but those checks do not establish current physical-device contents.
 Do not restart against an obsolete baseline after an interrupted write.
 
 Build with the existing firmware build command. Inspect an offline plan:

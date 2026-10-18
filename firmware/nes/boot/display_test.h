@@ -37,10 +37,15 @@
 int fm1_display_test_init(void);
 int fm1_display_test_frame(uint32_t elapsed_ms);
 void fm1_display_test_stop(void);
-#if defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || defined(FM1_MOD_PLAYER)
+#if defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || defined(FM1_MOD_PLAYER) || defined(FM1_FORGE)
 #include <stddef.h>
 /* Synchronous stream through the already initialized stock-sequence driver. */
 int fm1_display_write(int data,const uint8_t *,size_t);
+#if defined(FM1_NES_PLAYER) && defined(FM1_LCD_STOCK_DMA)
+/* One synchronous producer may populate the owned DMA strip before write.
+ * The pointer remains owned by this driver and is valid until shutdown. */
+uint8_t *fm1_display_strip_buffer(size_t *length);
+#endif
 #ifdef FM1_LCD_ASYNC
 typedef struct {
     uint32_t submitted,completed,busy_skips,irqs,bytes,errors;
@@ -49,7 +54,11 @@ typedef struct {
 /* Single task producer; the IRQ only advances the active immutable buffer. */
 int fm1_display_async_start(void);
 int fm1_display_async_begin(int wanted);
+/* Legacy producer supplies RGB565 big-endian; RGB444 modes convert here. */
 int fm1_display_async_rows(unsigned y,unsigned rows,const uint8_t *wire);
+/* Already packed for FM1_LCD_WIRE_BPP. Exact size is required and copied
+ * before return; the caller may immediately reuse the strip. */
+int fm1_display_async_wire_rows(unsigned y,unsigned rows,const uint8_t *wire,size_t size);
 #ifdef FM1_LCD_DIRECT
 int fm1_display_async_native_rows(unsigned y,unsigned rows,const uint16_t *,unsigned crop);
 #endif

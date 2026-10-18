@@ -545,6 +545,7 @@ static void probe_mod(const char *path){
     assert(nonzero>0);
     printf("parsed and rendered %s: %zu bytes, %u orders, %u patterns\n",path,length,doc.orders,doc.patterns);
 }
+#include "test_editor_extensions.h"
 int main(int argc,char **argv){
     if(argc==3 && !strcmp(argv[1],"--probe")){probe_mod(argv[2]);return 0;}
     if(argc==2){test_starter_bank(argv[1]);puts("starter bank parsed and rendered");return 0;}
@@ -567,6 +568,6 @@ int main(int argc,char **argv){
     test_clear_cell_erases_selected_note_and_effect();test_legacy_clear_still_erases_full_selected_cell();
     test_clearing_unchanged_fields_does_not_mark_document_dirty();test_clear_operations_reject_audition_mode();
     test_arpeggio_resets_on_next_row();test_classic_song_effects();
-    test_extended_patterns();test_usb();test_invalid();test_library();
+    test_extended_patterns();test_usb();test_invalid();test_library();test_editor_extensions();
     puts("mod tests passed");return 0;
 }

@@ -15,6 +15,11 @@
 #define MAXP_SIZE_CDC_BULKIN 64
 #define MAXP_SIZE_CDC_BULKOUT 64
 #define MAXP_SIZE_CDC_INTRIN 16
+#ifdef FM1_USB_MIDI_UPDATE
+#ifndef FM1_MIDI_LOADER_COMPATIBLE
+#define FM1_MIDI_LOADER_COMPATIBLE 0
+#endif
+#endif
 #include "usb/usb_common_def.h"
 #include "usb/usb_std_class_def.h"
 #ifndef FM1_USB_CONTROLLER

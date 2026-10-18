@@ -2,7 +2,11 @@
 #include "usb/device/usb_stack.h"
 /* Private bench identity, inherited Jieli SDK VID/PID pair, NOT a newly
  * assigned/public VID. No chip/flash serial or key is exposed. */
+#if defined(FM1_USB_AUDIO) || defined(FM1_USB_VIDEO) || defined(FM1_USB_MIDI_UPDATE)
+const u8 fm1_usb_device_descriptor[]={18,1,0,2,0xef,2,1,64,0x54,0x36,0x55,0x51,3,2,1,2,0,1};
+#else
 const u8 fm1_usb_device_descriptor[]={18,1,0,2,2,2,1,64,0x54,0x36,0x55,0x51,0,2,1,2,0,1};
+#endif
 const u8 fm1_usb_config_descriptor[]={9,2,0,0,0,1,0,0x80,50};
 static const u8 lang[]={4,3,9,4};
 static void string_desc(u8 *p,const char *s) {
@@ -12,7 +16,15 @@ static void string_desc(u8 *p,const char *s) {
 void get_device_descriptor(u8 *p,usb_dev id){(void)id;memcpy(p,fm1_usb_device_descriptor,18);}
 void get_language_str(u8 *p){memcpy(p,lang,sizeof(lang));}
 void get_manufacture_str(u8 *p){string_desc(p,"FM1 local diagnostic");}
-void get_product_str(u8 *p){string_desc(p,"FM1 USB Diagnostic");}
+void get_product_str(u8 *p){string_desc(p,
+#ifdef FM1_USB_MIDI_UPDATE
+    "FM-1 Forge"
+#elif defined(FM1_FORGE)
+    "FM1 FW Factory"
+#else
+    "FM1 USB Diagnostic"
+#endif
+);}
 void get_iserialnumber_str(u8 *p){string_desc(p,"");}
 const u8 *usb_get_config_desc(void){return fm1_usb_config_descriptor;}
 const u8 *usb_get_string_desc(u32 id){(void)id;return NULL;}

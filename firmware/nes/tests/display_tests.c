@@ -2,6 +2,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef FM1_FORGE_WIRE_TEST
+#include "forge.h"
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+#endif
 #define CHECK(x) do{if(!(x)){fprintf(stderr,"line %d: %s\n",__LINE__,#x);exit(1);}}while(0)
 static uint32_t regs[24],now;
 static int frozen,stuck,invalid_clock,pending,cmd,commands[256],accesses,colmod;
@@ -240,6 +248,75 @@ static void check_async_frame(unsigned offset,unsigned seed) {
     for(i=0;i<FM1_LCD_WIRE_FRAME_BYTES;++i)CHECK(pixels[offset+i]==(uint8_t)(seed+i));
 #endif
 }
+#ifdef FM1_FORGE_WIRE_TEST
+static void test_forge_wire_rows(void) {
+    fm1_forge_frame frame={0};unsigned pass,y,i;
+    uint8_t reference[3840],*strip;
+#ifdef _WIN32
+    SYSTEM_INFO info;DWORD old;uint8_t *allocation;
+    GetSystemInfo(&info);CHECK(info.dwPageSize>=FM1_LCD_WIRE_STRIP_BYTES+16);
+    allocation=(uint8_t *)VirtualAlloc(NULL,2u*info.dwPageSize,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
+    CHECK(allocation && VirtualProtect(allocation+info.dwPageSize,info.dwPageSize,PAGE_NOACCESS,&old));
+    /* Exact2880-byte RGB444 or3840-byte RGB565 input ends at an inaccessible
+     * page. The former legacy3840-byte read would fault, not pass a canary. */
+    strip=allocation+info.dwPageSize-FM1_LCD_WIRE_STRIP_BYTES;
+#else
+    uint8_t allocation[16+FM1_LCD_WIRE_STRIP_BYTES+16];
+    strip=allocation+16;memset(strip+FM1_LCD_WIRE_STRIP_BYTES,0x5a,16);
+#endif
+    memset(strip-16,0x5a,16);
+    frame.input.volume_valid=1;frame.input.volume_raw=527;frame.input.volume_gain=65;
+    frame.input.volume_min=64;frame.input.volume_max=900;frame.input.last_key=14;
+    frame.input.encoder_seen=127;frame.sys_hz=480000000;frame.lsb_hz=60000000;
+    for(pass=0;pass<3;pass++) {
+        fm1_lcd_async_stats stats;
+        frame.input.keys=UINT64_C(1)<<(14+pass);frame.input.seen=(UINT64_C(1)<<41)-1;
+        frame.usb_audio=(uint8_t)(pass&1);frame.module_user=(uint8_t)(pass&1);
+        frame.fault=pass==2?-7:0;frame.lcd_completed=10+pass;
+        reset();CHECK(!fm1_display_test_init());stream_test=1;count=0;
+        CHECK(!fm1_display_async_start() && fm1_display_async_begin(1)==1);
+        for(y=0;y<240;y+=8) {
+            CHECK(!fm1_forge_render(&frame,y,8,strip,FM1_LCD_WIRE_BPP));
+            CHECK(!fm1_forge_render(&frame,y,8,reference,16));
+            /* Independent expectation starts from565, downscaling channels.
+             * Keep it beyond the captured frame then immediately reuse input. */
+            for(i=0;i<1920;i++) {
+                unsigned v=reference[2*i]*256u+reference[2*i+1];
+                unsigned expected=FM1_LCD_WIRE_BPP==16?v:(v>>12)*256u+(((v>>5)&63u)/4u)*16u+(v&31u)/2u;
+                unsigned at=115200+2u*(y*240u+i);
+                pixels[at]=(uint8_t)(expected>>8);pixels[at+1]=(uint8_t)expected;
+            }
+            CHECK(!fm1_display_async_wire_rows(y,8,strip,FM1_LCD_WIRE_STRIP_BYTES));
+            memset(strip,0xa5,FM1_LCD_WIRE_STRIP_BYTES);
+            for(i=0;i<16;i++)CHECK(strip[-16+(int)i]==0x5a);
+#ifndef _WIN32
+            for(i=0;i<16;i++)CHECK(strip[FM1_LCD_WIRE_STRIP_BYTES+i]==0x5a);
+#endif
+        }
+        CHECK(!count && dma_pending);
+        for(i=0;i<30;i++)complete_strip();
+        CHECK(count==FM1_LCD_WIRE_FRAME_BYTES);
+        for(i=0;i<57600;i++) {
+            unsigned got;
+            if(FM1_LCD_WIRE_BPP==16)got=pixels[2*i]*256u+pixels[2*i+1];
+            else {unsigned at=i/2*3;got=(i&1)?((pixels[at+1]&15u)*256u+pixels[at+2]):(pixels[at]*16u+pixels[at+1]/16u);}
+            CHECK(got==pixels[115200+2*i]*256u+pixels[115201+2*i]);
+        }
+        fm1_display_async_snapshot(&stats);CHECK(stats.completed==1 && stats.bytes==FM1_LCD_WIRE_FRAME_BYTES && !stats.errors);
+    }
+    /* Wrong length or row order fails before DMA can acquire source storage. */
+    reset();CHECK(!fm1_display_test_init());stream_test=1;
+    CHECK(!fm1_display_async_start() && fm1_display_async_begin(1)==1);
+    CHECK(fm1_display_async_wire_rows(0,8,strip,FM1_LCD_WIRE_STRIP_BYTES-1)==-10 && !lcd_irq && regs[6]==0);
+    reset();CHECK(!fm1_display_test_init());stream_test=1;
+    CHECK(!fm1_display_async_start() && fm1_display_async_begin(1)==1);
+    CHECK(fm1_display_async_wire_rows(8,8,strip,FM1_LCD_WIRE_STRIP_BYTES)==-10 && !lcd_irq && regs[6]==0);
+#ifdef _WIN32
+    CHECK(VirtualFree(allocation,0,MEM_RELEASE));
+#endif
+    puts("PASS actual Forge render/packed-wire LCD DMA interface, exact guarded input, copied lifetime, pixels and length/order guards");
+}
+#endif
 #ifdef FM1_LCD_RGB444
 static void test_rgb444_all_colors(void) {
     unsigned pass,y,i;uint8_t row[3840];
@@ -492,6 +569,9 @@ int main(void) {
 #endif
 #ifdef FM1_LCD_DIRECT
     test_native_rows();
+#endif
+#ifdef FM1_FORGE_WIRE_TEST
+    test_forge_wire_rows();
 #endif
     puts("display protocol/colors/guard tests passed");return 0;
 }

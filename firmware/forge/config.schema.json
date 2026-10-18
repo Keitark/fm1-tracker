@@ -1,0 +1,20 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"urn:fm1-forge:project:3",
+  "title":"FM1 Forge project schema 3 (module ABI 1; strict v1/v2 imports)",
+  "type":"object","additionalProperties":false,
+  "required":["schemaVersion","project","profile","clockPreset","lcdPreset","module","usb"],
+  "allOf":[{"if":{"properties":{"clockPreset":{"const":"sdk-320"}}},"then":{"properties":{"lcdPreset":{"const":"stock-dma"}}}},{"oneOf":[{"properties":{"schemaVersion":{"const":1},"usb":{"not":{"required":["uvc"]}}},"not":{"required":["hal"]}},{"properties":{"schemaVersion":{"const":2},"usb":{"not":{"required":["uvc"]}}},"required":["hal"]},{"properties":{"schemaVersion":{"const":3},"usb":{"required":["uvc"]}},"required":["hal"]}]}],
+  "properties":{
+    "schemaVersion":{"enum":[1,2,3]},
+    "project":{"type":"object","additionalProperties":false,"required":["slug","displayName"],"properties":{"slug":{"type":"string","pattern":"^[a-z][a-z0-9-]{0,47}$"},"displayName":{"type":"string","minLength":1,"maxLength":64}}},
+    "profile":{"const":"forge-diag"},
+    "clockPreset":{"enum":["sdk-default","sdk-320"]},
+    "lcdPreset":{"enum":["stock-dma","spi15-rgb444","spi30-rgb444"]},
+    "module":{"enum":["diagnostics","user"]},
+    "usb":{"type":"object","additionalProperties":false,"required":["cdc","uac","uboot"],"properties":{"cdc":{"const":true},"uac":{"type":"boolean","default":true},"uvc":{"type":"boolean","default":false,"description":"Optional USB video screen mirror; defaults off for imported v1/v2 projects."},"uboot":{"const":true}}},
+    "hal":{"type":"object","description":"User module access only; fixed diagnostic and recovery drivers remain active.","additionalProperties":false,"required":["buttons","encoders","volume","lcd","audio"],"properties":{
+      "buttons":{"type":"boolean","default":true},"encoders":{"type":"boolean","default":true},"volume":{"type":"boolean","default":true},"lcd":{"type":"boolean","default":true},"audio":{"type":"boolean","default":true}
+    }}
+  }
+}

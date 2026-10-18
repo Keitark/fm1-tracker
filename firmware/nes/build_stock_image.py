@@ -130,9 +130,21 @@ def _replace_application(raw,app):
     return candidate
 
 
-def build_candidate(raw,elf,app,require_peripherals=True,rom='rom50',display_only=False,usb_only=False,usb_peripheral_tests=False,usb_nes=False,usb_mdx=False,usb_audio=False,usb_mod=False):
+def validate_factory_project(schema,hal):
+    """Selected-module schemas cannot silently use the legacy no-HAL audit."""
+    require(type(schema) is int and schema in (1,2,3),'Invalid factory project schema')
+    require(schema<2 or hal is not None,'Factory project schema'+str(schema)+' requires exact HAL access selections')
+    if hal is not None:
+        require(isinstance(hal,dict) and set(hal)=={'buttons','encoders','volume','lcd','audio'} and all(type(v) is bool for v in hal.values()),'Invalid factory HAL access selections')
+    return hal
+
+
+def build_candidate(raw,elf,app,require_peripherals=True,rom='rom50',display_only=False,usb_only=False,usb_peripheral_tests=False,usb_nes=False,usb_mdx=False,usb_audio=False,usb_mod=False,factory_diag=False,factory_user_module=False,factory_clock='sdk-default',factory_hal_access=None,factory_project_schema=1,usb_video=False):
+    require(factory_diag or (factory_project_schema==1 and factory_hal_access is None),'Factory project metadata requires explicit factory profile')
+    if factory_diag:factory_hal_access=validate_factory_project(factory_project_schema,factory_hal_access)
+    require(type(usb_video) is bool and (not usb_video or (factory_diag and factory_project_schema==3)), 'Forge UVC requires explicit project schema3')
     static=audit(elf,app,require_peripherals=require_peripherals,rom=rom,display_only=display_only,
-                 usb_only=usb_only,usb_peripheral_tests=usb_peripheral_tests,usb_nes=usb_nes,usb_mdx=usb_mdx,usb_audio=usb_audio,usb_mod=usb_mod,require_boot_trace=usb_only,require_board_power=usb_only)
+                 usb_only=usb_only,usb_peripheral_tests=usb_peripheral_tests,usb_nes=usb_nes,usb_mdx=usb_mdx,usb_audio=usb_audio,usb_video=usb_video,usb_mod=usb_mod,factory_diag=factory_diag,factory_user_module=factory_user_module,factory_clock=factory_clock,factory_hal_access=factory_hal_access,require_boot_trace=usb_only,require_board_power=usb_only)
     original=BACKUP.read_bytes()
     require(raw[:AREA]==original[:AREA],'Boot/header/config differs from audited bootloader')
     _,boot_report=decode_boot(original)

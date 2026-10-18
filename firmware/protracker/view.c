@@ -4,7 +4,8 @@
 
 enum { INK=0x084b, PANEL=0x7c72, PANEL_DARK=0x4aef, EDGE=0xad77,
        TEXT=0xe73c, FAINT=0x8c75, CYAN=0x6fff, GREEN=0x67e8,
-       CURSOR=0xc638, BLACK=0x0000, AMBER=0xffcc, RED=0xf9a6 };
+       CURSOR=0xc638, BLACK=0x0000, AMBER=0xffcc, RED=0xf9a6,
+       BLOCK=0x3259 };
 
 /* Original fonts expanded to ROM scanlines: no 64-bit shifts in the LCD loop. */
 static const uint8_t small_font[96][5]={
@@ -102,6 +103,7 @@ void fm1_tracker_view_update(fm1_tracker_view *v,const fm1_mod_document *d,
     memset(v->ui,0,sizeof(v->ui));memset(v->grid,0,sizeof(v->grid));
     v->page=(uint8_t)page;v->loaded=d->loaded;v->channel=e->channel;
     v->write=e->edit;v->sample_mode=e->sample_mode;
+    v->field=e->field;memset(v->block_mask,0,sizeof(v->block_mask));
     for(ch=0;ch<4;ch++){
         v->peak[ch]=0;
         for(i=0;i<48;i++){
@@ -150,8 +152,9 @@ void fm1_tracker_view_update(fm1_tracker_view *v,const fm1_mod_document *d,
         unsigned h=20u+(e->sample-1u)*30u;
         int fine=d->bytes[h+24];if(fine>=8)fine-=16;
         display_name(name,d->bytes+h,22,12);
-        snprintf(v->ui[2],40,"%s %-12.12s V%02u F%+d",
-            e->edit && !e->sample_mode?"FX ":"SMP",
+        static const char *const fields[]={"NOTE","SMP","FX","PARAM"};
+        snprintf(v->ui[2],40,"%-5s %-12.12s V%02u F%+d",
+            fields[e->field<FM1_FIELD_COUNT?e->field:0],
             name,d->bytes[h+25],fine);
         if(save_hint)snprintf(v->ui[2],40,"USB SAVE TO COMPUTER");
     }
@@ -161,6 +164,14 @@ void fm1_tracker_view_update(fm1_tracker_view *v,const fm1_mod_document *d,
     for(i=0;i<9;i++){
         int shown=(int)row+(int)i-4;unsigned pos,k;
         if(shown<0 || shown>=64)continue;
+        if(e->block_active && e->block_order==order){
+            unsigned low=e->block_anchor_row<e->block_end_row?e->block_anchor_row:e->block_end_row;
+            unsigned high=e->block_anchor_row>e->block_end_row?e->block_anchor_row:e->block_end_row;
+            unsigned left=e->block_anchor_channel<e->block_end_channel?e->block_anchor_channel:e->block_end_channel;
+            unsigned right=e->block_anchor_channel>e->block_end_channel?e->block_anchor_channel:e->block_end_channel;
+            if((unsigned)shown>=low && (unsigned)shown<=high)
+                for(ch=left;ch<=right;ch++)v->block_mask[i]|=(uint8_t)(1u<<ch);
+        }
         pos=(unsigned)snprintf(v->grid[i+1],40,"%c%02u ",i==4?'>':' ',(unsigned)shown);
         for(ch=0;ch<4;ch++){
             fm1_mod_cell cell={0,0,0,0};char formatted[12];
@@ -174,8 +185,34 @@ void fm1_tracker_view_update(fm1_tracker_view *v,const fm1_mod_document *d,
     }
 }
 
+void fm1_tracker_view_context_apply(fm1_tracker_view *v,const fm1_mod_document *d,
+    const fm1_mod_editor *e,const fm1_tracker_view_context *context){
+    unsigned i,start,pos=0;
+    if(!context || v->page || !d->loaded)return;
+    if(context->arranger){
+        snprintf(v->ui[0],40,"ORDER %02u/%02u PATTERN %02u",e->order+1,d->orders,
+                 (unsigned)d->bytes[952+e->order]);
+        memset(v->ui[1],0,40);start=e->order>1?e->order-1:0;
+        for(i=start;i<d->orders && i<start+4;i++){
+            int count=snprintf(v->ui[1]+pos,40-pos,"%c%02u:%02u ",
+                i==e->order?'>':' ',i+1,(unsigned)d->bytes[952+i]);
+            if(count<0 || (unsigned)count>=40-pos)break;pos+=(unsigned)count;
+        }
+        snprintf(v->ui[2],40,"FX ADD ENV INS SCL DEL HOME");
+    }else if(context->bank_open){
+        snprintf(v->ui[0],40,"BANK %02u/%02u -> SONG S%02X",
+            context->bank_count?context->bank_index+1:0,context->bank_count,e->sample);
+        snprintf(v->ui[1],40,"%.23s",context->bank_name);
+        snprintf(v->ui[2],40,"KN1 HEAR FX COPY ENV BACK");
+    }else if(context->new_hold)snprintf(v->ui[2],40,"HOLD SEQ+REC: NEW EMPTY SONG");
+    else if(context->quick_modifier)snprintf(v->ui[2],40,"Q1-8 SELECT HOLD600 BIND");
+    else if(context->block_modifier)snprintf(v->ui[2],40,"SEQ+SCL COPY SEQ+LFO PASTE");
+    if(context->notice[0])snprintf(v->ui[2],40,"%.39s",context->notice);
+}
+
 static uint8_t font_row(const uint8_t *font,unsigned height,char c,unsigned row){
     unsigned code=(unsigned char)c;
+    if(code>='a' && code<='z')code-=32;
     return code>=32 && code<128 && row<height?font[(code-32)*height+row]:0;
 }
 static void pixel(uint8_t **out,uint16_t color){
@@ -246,13 +283,20 @@ void fm1_tracker_view_render(const fm1_tracker_view *v,unsigned y,unsigned rows,
             }
             for(col=0;col<40;col++){
                 unsigned selected=col>=4+v->channel*9 && col<12+v->channel*9;
-                unsigned field=selected && col<7+v->channel*9;
+                static const uint8_t field_begin[4]={0,3,5,6},field_end[4]={3,5,6,8};
+                unsigned base=4+v->channel*9,field_id=v->field<4?v->field:0;
+                unsigned field=selected && col>=base+field_begin[field_id] && col<base+field_end[field_id];
+                unsigned block_ch=col>=4?(col-4)/9:4;
+                unsigned block=index>0 && block_ch<4 && (col-4)%9<8 &&
+                    (v->block_mask[index-1]&(1u<<block_ch));
                 uint16_t bg=index==0?PANEL:active?CURSOR:INK;
                 uint16_t fg=index==0?TEXT:active?BLACK:TEXT;
                 uint8_t bits=col<length && local>0 && local<15?
                     font_row(&grid_font[0][0],7,v->grid[index][col],(local-1)/2):0;
                 if(index==0 && selected){bg=PANEL_DARK;fg=AMBER;}
-                if(active && selected && (!v->write || field))bg=v->write?RED:AMBER;
+                if(block && !active)bg=BLOCK;
+                if(active && selected)bg=CYAN;
+                if(active && field)bg=v->write?RED:AMBER;
                 if(!active && index>0 && col<4)fg=FAINT;
                 if(!active && index>0 && selected)fg=CYAN;
                 for(x=0;x<6;x++){
