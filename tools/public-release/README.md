@@ -3,8 +3,10 @@
 This tool prepares a **candidate requiring manual review**, not a public release.
 It never publishes, copies Git history, builds firmware, opens a device, fetches
 dependencies or changes upstream licenses. The initial scope is independently
-authored UTF-8 source below `firmware/usb-midi/` only. Existing GPL components,
-SDKs, private images and music/game assets are outside that boundary.
+authored UTF-8 source below `firmware/usb-midi/` only. The separately owner-
+relicensed Apache USB/audio component remains outside that bounded scope until
+its wider dependency closure is separately prepared. Unrelated GPL engines,
+SDKs, private images and music/game assets are also excluded.
 
 `candidate-inventory.json` explicitly classifies every source file in that
 directory; an empty or incomplete inventory fails audit. Each entry contains:

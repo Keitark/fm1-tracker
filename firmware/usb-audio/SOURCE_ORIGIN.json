@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/Keitark/fm1-public",
   "commit": "d60e1b190e785ef83490ad6716e9c8ecf1e6013d",
-  "license": "GPL-3.0-only",
+  "license": "Apache-2.0",
   "files": {
     "firmware/nes/audit_usb_packet.py": "f6c6f840d4609497818db506eee3a22fb9feda65d3f8c741c22de2c538fec1e6",
     "firmware/usb-audio/bridge.c": "0a81c337ae7ce4d7d68e60ea21206fbbf9e681814d4973d4f26dfa95712273cc",
@@ -20,5 +20,40 @@
     "firmware/usb-diag/test_packet.c": "1d97b4c102772ce086ae1b5471b4a4066cac6f93927ce5154df7bbf052049b57",
     "firmware/usb-diag/tests/usb_policy_tests.c": "6ea5dae923240d6134ca32722ce79125552b7d42d25180336e14518a9871076b",
     "firmware/usb-diag/usb_policy.c": "f8595c0c914928dac6ec79707c8d600a4ed5bfe30292ff3f0a10550e296d1df2"
+  },
+  "historicalLicense": "GPL-3.0-only",
+  "relicense": {
+    "date": "2026-10-18",
+    "authority": "Copyright owner Keitark explicitly requested this scoped relicensing.",
+    "notice": "firmware/usb-audio/RELICENSE.md",
+    "scope": [
+      "firmware/nes/audit_usb_packet.py",
+      "firmware/usb-audio/bridge.c",
+      "firmware/usb-audio/bridge.h",
+      "firmware/usb-audio/profile.c",
+      "firmware/usb-audio/target.c",
+      "firmware/usb-audio/target.h",
+      "firmware/usb-audio/target_fake.h",
+      "firmware/usb-audio/test_bridge.c",
+      "firmware/usb-audio/test_profile.py",
+      "firmware/usb-audio/test_stall.c",
+      "firmware/usb-audio/test_target.c",
+      "firmware/usb-diag/packet.c",
+      "firmware/usb-diag/packet.h",
+      "firmware/usb-diag/packet_fake.h",
+      "firmware/usb-diag/test_packet.c",
+      "firmware/usb-diag/tests/usb_policy_tests.c",
+      "firmware/usb-diag/usb_policy.c",
+      "firmware/usb-diag/app_main.c",
+      "firmware/usb-diag/descriptors.c",
+      "firmware/usb-diag/vendor_overlay.py"
+    ],
+    "integrationRepository": "https://github.com/Keitark/fm1-tracker",
+    "integrationCommit": "cf4418fcc947b5ac96f2c1320a05e84373469ae7",
+    "integrationFiles": {
+      "firmware/usb-diag/app_main.c": "538e660c6c7490a73d909f8fd834ca84aec85d77906807e4d617816388fdde1c",
+      "firmware/usb-diag/descriptors.c": "b0b11bb3b1d37980673d0c5d553a64abaaffa6440e9a30b1da236d008b8d4816",
+      "firmware/usb-diag/vendor_overlay.py": "ec14086826f5c2ccd55743f866177d4e41ff81e3cbbc711bd55527fcc73c88ce"
+    }
   }
 }

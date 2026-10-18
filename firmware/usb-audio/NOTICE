@@ -1,0 +1,42 @@
+FM-1 USB/audio transport
+Copyright 2026 Keitark
+
+The project-owned portions of the following exact 20 paths are provided under
+Apache License 2.0 by the owner's 2026-10-18 relicensing instruction. See
+RELICENSE.md for the grant, authorship evidence and historical-license boundary.
+Paths are relative to the repository root:
+
+- firmware/nes/audit_usb_packet.py
+- firmware/usb-audio/bridge.c
+- firmware/usb-audio/bridge.h
+- firmware/usb-audio/profile.c
+- firmware/usb-audio/target.c
+- firmware/usb-audio/target.h
+- firmware/usb-audio/target_fake.h
+- firmware/usb-audio/test_bridge.c
+- firmware/usb-audio/test_profile.py
+- firmware/usb-audio/test_stall.c
+- firmware/usb-audio/test_target.c
+- firmware/usb-diag/packet.c
+- firmware/usb-diag/packet.h
+- firmware/usb-diag/packet_fake.h
+- firmware/usb-diag/test_packet.c
+- firmware/usb-diag/tests/usb_policy_tests.c
+- firmware/usb-diag/usb_policy.c
+- firmware/usb-diag/app_main.c
+- firmware/usb-diag/descriptors.c
+- firmware/usb-diag/vendor_overlay.py
+
+The source-history manifest retains the original GPL-3.0-only import hashes as
+historical evidence; those hashes do not describe the newly headed files.
+Existing GPL permissions for historical releases are not withdrawn.
+
+The SDK context and PeakRacing NES fragments used by vendor_overlay.py retain
+their upstream Apache-2.0 terms and applicable original notices, including
+PeakRacing's "Copyright PeakRacing". Generated SDK/core files retain their
+original headers and identify the FM-1 overlay modifications. This grant does
+not claim ownership of those upstream portions or replace their notices.
+
+This scoped grant does not cover unrelated MDX, RetroFM/mdxtools or M-VAVE APP
+code. Their GPL and other applicable terms remain unchanged. It does not make
+a combined firmware containing those components permissively licensed.

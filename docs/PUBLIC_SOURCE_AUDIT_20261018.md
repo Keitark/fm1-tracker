@@ -2,28 +2,33 @@
 
 Status: **candidate preparation only; not approved or published**. This is a
 source/provenance inventory, not an exhaustive copyright determination. No device
-access or firmware transfer was performed for this audit. No existing license is
-replaced, and the current private Git histories remain outside the export.
+access or firmware transfer was performed for this audit. The owner's scoped
+USB/audio Apache grant is recorded below; third-party licenses and historical
+GPL grants remain available. Private Git histories remain outside the export.
 
 The current exact inventory classifies 39 scoped Apache-2.0 source files in
-`firmware/usb-midi/`. The fresh r2 snapshot is at
-`tmp/fm1-common-midi-public-source-candidate-20261018-r2/`: 39 sources plus
+`firmware/usb-midi/`. The fresh r3 snapshot is at
+`tmp/fm1-common-midi-public-source-candidate-20261018-r3/`: 39 sources plus
 generated `PUBLIC_SOURCE_CANDIDATE.json`, with no Git history, dependency
-binaries or private images. Every source/export hash was rechecked after tests
-and matches the inventory. The original 38-file snapshot at
-`tmp/fm1-common-midi-public-source-candidate-20261018/` is **superseded** and
-retained unchanged as a private reference. The r2 snapshot remains
-`candidate-unreviewed`; this is not a publication approval.
+binaries or private images. Fresh inventory/export checks confirm every hash
+and the exact file set. Only `README.md`, `PROTOCOL.md` and `NOTICE` changed
+from r2, to describe the owner's separate USB/audio Apache grant. All remaining
+36 files, including every runtime, build and test source, were byte-compared to
+r2 and remain identical. The original snapshot and r2 are **superseded** by
+the corrected licensing prose, retained unchanged as private references. The
+r3 snapshot remains `candidate-unreviewed`; this is not publication approval.
 
-Standalone checks ran from r2 exported source: four portable C tests, 37
-browser JavaScript tests and five synthetic package tests passed. Eight
-linked-image Python checks skipped with their explicit integration-only reason;
-three C integration targets were omitted because surrounding USB target/policy
-sources are deliberately excluded. Build outputs are outside the source export
-at `tmp/fm1-common-midi-public-host-20261018-r2/`. The exporter suite passed 17
-checks, with four actual OS link-creation cases skipped due host permissions;
-deterministic symlink/reparse/hardlink rejection checks passed. The local
-validation receipt is `tmp/fm1-common-midi-public-source-validation-20261018-r2.json`.
+Runtime suites were deliberately **not rerun for these prose-only changes**.
+The exact unchanged source carries r2 evidence: four portable C tests, 37 browser
+JavaScript tests and five synthetic package tests passed. Eight linked-image
+Python checks skipped with their explicit integration-only reason; three C
+integration targets were omitted because surrounding USB target/policy sources
+are deliberately excluded. Those r2 build outputs remain outside the source
+export at `tmp/fm1-common-midi-public-host-20261018-r2/`. The earlier exporter
+suite passed 17 checks with four actual OS link-creation skips; deterministic
+link checks passed. The r3 receipt explicitly records carried runtime evidence
+and fresh export/hash checks at
+`tmp/fm1-common-midi-public-source-validation-20261018-r3.json`.
 
 The r2 correction adds a lock-held pre-write hook for integration guards,
 read-only saved-attempt inspection without nested locking, and a bounded fresh
@@ -47,14 +52,18 @@ MDX's root GPL license and GPL RetroFM/mdxtools vendors are present in its first
 `92a2316` commit. UAC was introduced later in `b135802`, and bounded packet code
 in `99bb92c`. The combined MDX player has GPL dependencies, but that alone does
 not establish that its isolated USB/UAC implementation copied those engines.
-Existing GPL declarations are preserved until an ownership/source review supports
-any separate licensing decision.
+After the subsequent 20-path history/source review, the owner explicitly requested
+the current Apache-2.0 grant in
+[USB/audio RELICENSE.md](../firmware/usb-audio/RELICENSE.md). Historical GPL grants
+remain available. The current grant covers project-owned contributions, not
+ownership of the SDK/PeakRacing Apache fragments already present in the overlay.
 
 The new backend uses the existing old JieLi SDK's `update.a` APIs, rather than
 M-VAVE's proprietary `libfm1_engine.a`. The official APP/engine SDK exception is
 recorded as a future integration boundary, not a dependency of this new source
-candidate. A potential GPL-only/proprietary-engine combination must not be
-misreported as the current backend's linkage.
+candidate. A potential combination of other GPL engines with a proprietary engine
+must not be misreported as the current backend's linkage. The newly relicensed
+USB/audio project portions are now Apache-2.0, not GPL-only.
 
 The candidate protocol's baseline gate is an exact on-device SHA256 of the
 current 1 MiB raw flash, computed after confirmed ARM and before its
@@ -69,11 +78,11 @@ and device read/loader/transfer/reboot acceptance remains unqualified.
 | Paths / material | Recorded terms and source boundary | Initial export |
 | --- | --- | --- |
 | New `firmware/usb-midi/` files, individually inventoried | Independently authored candidate currently under scoped Apache-2.0 via its own LICENSE/NOTICE. Exact per-file provenance/hash required; source/ownership review remains required. Owner may change independently owned scope before public release. | Eligible candidate after complete inventory; no binary. |
-| `firmware/usb-audio/*`; `firmware/usb-diag/{packet.c,packet.h,packet_fake.h,test_packet.c,usb_policy.c,tests/usb_policy_tests.c}`; `firmware/nes/audit_usb_packet.py` | The exact copied closure is listed in `firmware/usb-audio/SOURCE_ORIGIN.json`; GPL-3.0-only and retained `licenses/fm1-mdx-GPL-3.0.txt`. Preserve current notices. | Excluded. |
-| Official APP sources and build/workbench template | GPL3-only with exact binary-SDK exception. Exception applies to marked APP code, not automatically to our inherited GPL-only components. Current new backend does not import this APP. | External reference, excluded. |
+| Project-owned portions of the exact 20 USB/audio paths in `firmware/usb-audio/RELICENSE.md` | Current owner-authorized Apache-2.0 grant. Component LICENSE/NOTICE and SDK/PeakRacing Apache notices remain applicable. SOURCE_ORIGIN preserves 17 immutable historical GPL import hashes and separately records three integration origins; earlier GPL releases are not withdrawn. | Excluded by the bounded MIDI scope, pending separate dependency/export closure. |
+| Official APP sources and build/workbench template | GPL3-only with exact binary-SDK exception. Exception applies to marked APP code, not automatically to unrelated GPL components. Current new backend does not import this APP. | External reference, excluded. |
 | Official SDK `libfm1_engine.a` and other listed binary components | Separately licensed. Proprietary engine has FM1-only grant; other components retain their own terms. Root SDK licensing does not replace Newlib/compiler-rt/micro-ecc/other notices. | Excluded; separate binary redistribution review. |
 | Official `uboot.boot`, `ota.bin`, `cfg_tool.bin`, `boot-config.bin`, `sdk/firmware/FM-1_015.fwsc` | Specific upstream Apache-2.0 resource grant, with required notices/modification markings. Does not relicense private readbacks or complete historical packages. | Excluded from source-only candidate. |
-| `firmware/nes/`, `firmware/usb-diag/vendor_overlay.py` | NES Apache dependency; vendor/PeakRacing adaptation fragments and board findings are documented. SDK source/license notices and changes must be preserved if redistributed. | Excluded pending path-level review. |
+| `firmware/nes/` and upstream fragments in `firmware/usb-diag/vendor_overlay.py` | NES/SDK Apache dependencies remain separate from the owner grant for project overlay contributions. Original SDK/core headers and `Copyright PeakRacing` must be retained, with generated modification notices. Board findings keep their documented provenance. | Excluded from the bounded MIDI snapshot; wider dependency review remains separate. |
 | `firmware/forge/`, `firmware/protracker/`, `firmware/usb-video/`, `firmware/mdx/` | Much project-maintained code has no individual SPDX header/root license in this workspace. Origin statements do not certify sole authorship. MDX runtime and other external dependencies retain their own terms. | Excluded pending explicit ownership/license classification. |
 | `firmware/protracker/samples/FM1BREAK.*` and original generation inputs expressly covered by `ASSET_LICENSE.md` | CC0-1.0 for identified original assets only. | Excluded from initial transport candidate. |
 | Original MDX demo, starter MOD, Buddha prototype and other generated assets | Separate asset review; Buddha voice uses TTS-derived inputs and is expressly outside the CC0 breakbeat bank. | Excluded. |
@@ -109,8 +118,10 @@ authorship or detect every secret, and it does not grant redistribution rights.
 Before a public repository or firmware binary is prepared, review the exact
 candidate, review its scoped Apache-2.0 license and include its license/copyright
 material, preserve all relevant upstream notices and settle any copied-code or
-SDK/GPL combination. In particular, an exception attached to official M-VAVE APP
-code cannot simply be added to independently obtained GPL-only USB components.
+SDK/GPL combination involving other GPL components. The official M-VAVE APP's
+exception cannot simply be attached to unrelated GPL engine code. The current
+20-path USB/audio project scope instead has the explicit Apache owner grant;
+this does not broaden the 39-file MIDI export.
 The prepared source protocol and host tests also do not establish a working
 flash/update path on hardware.
 

@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Keitark
+ * See firmware/usb-audio/RELICENSE.md for the scoped license grant. */
 /* Exercise the actual EP0 hook and endpoint guard, not a duplicated policy. */
 #include <stdint.h>
 #include <stdio.h>

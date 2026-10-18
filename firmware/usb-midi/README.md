@@ -84,4 +84,8 @@ New native files in this directory are Apache-2.0; see [LICENSE](LICENSE),
 [NOTICE](NOTICE) and [SOURCE_ORIGIN.json](SOURCE_ORIGIN.json). They implement
 documented USB-MIDI layouts and factual vendor framing independently. External
 SDK sources/archives retain their own licenses and remain outside the public
-export. Existing shared GPL-only firmware modules retain their original terms.
+export. The project-owned portions of the separately defined USB/audio scope now
+have an owner-authorized Apache-2.0 grant; see
+[its exact scope and history](../usb-audio/RELICENSE.md). That wider component
+remains outside this bounded MIDI source export. Other GPL engines and the
+official M-VAVE APP retain their original terms.

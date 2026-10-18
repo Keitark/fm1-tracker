@@ -25,7 +25,7 @@
     },
     {
       "path": "firmware/usb-midi/NOTICE",
-      "sha256": "2a2ee4181eaa94ad8bb85df5df5261142b02d55dce2f93ee9f9524095fa79cab",
+      "sha256": "7599d74e25e590b55e7f91a1d4eac720add8f5b10269b9db3f11b2ff5fd48962",
       "license": "Apache-2.0",
       "origin": {
         "kind": "independently-authored",
@@ -34,7 +34,7 @@
     },
     {
       "path": "firmware/usb-midi/PROTOCOL.md",
-      "sha256": "7347dea07980fc835041244ab7115519c905dcb8889cc831c3c22451bdda5b94",
+      "sha256": "e251d814118d23c73d3a05f041e8f926d2a25da106bb99bfd6280ba112092b61",
       "license": "Apache-2.0",
       "origin": {
         "kind": "independently-authored",
@@ -43,7 +43,7 @@
     },
     {
       "path": "firmware/usb-midi/README.md",
-      "sha256": "c311867033898b29ad69c25208e01fa3233cbc668fa2c28ab2e38f2692ba8ed5",
+      "sha256": "1ce978ca885a784f34a2f59bad6ed9d14eace7ef6a555f18e42d5a5dd5ff9dc4",
       "license": "Apache-2.0",
       "origin": {
         "kind": "independently-authored",

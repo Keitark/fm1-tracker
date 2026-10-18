@@ -1,5 +1,6 @@
-/* SPDX-License-Identifier: GPL-3.0-only
- * Reused from Keitark/fm1-mdx at 4141057; see licenses/fm1-mdx-GPL-3.0.txt. */
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Keitark
+ * See firmware/usb-audio/RELICENSE.md for the scoped license grant. */
 #include "bridge.h"
 /* CDC owns0/1, OUT2, IN2(notification), IN3(data). UAC owns2..4 and EP1.
  * UAC1 fixed stereo PCM48k/16-bit; no unimplemented hardware volume controls. */

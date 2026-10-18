@@ -1,5 +1,10 @@
 # Common USB-MIDI implementation evidence — 2026-10-18
 
+This records the original r7 milestone. The later owner-requested USB/audio
+Apache-2.0 grant and post-grant r8 rebuild are recorded in
+[the licensing follow-up](USB_AUDIO_RELICENSE_20261018.md); r7 hashes remain
+historical evidence.
+
 This is an opt-in linked firmware candidate, not a physically qualified update
 release. No device was opened, flashed, reset or switched into a loader while
 implementing or validating this change. Normal builds keep installation disabled.

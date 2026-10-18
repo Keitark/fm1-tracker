@@ -1,5 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+# Project changes: Copyright 2026 Keitark; Apache SDK/PeakRacing notices retained.
 """Isolated, exact-pin SDK CDC corrections. Never modifies the vendor checkout."""
 import re
+
+def modified_notice(text):
+    """Mark generated adaptations without dropping upstream text or line numbers."""
+    return ('/* Modified by the FM-1 project. Project-owned USB/CDC changes are\n'
+            ' * Apache-2.0; see firmware/usb-audio/NOTICE and RELICENSE.md.\n'
+            ' * Upstream source copyrights/licenses remain in effect below. */\n'
+            '#line 1\n'+text)
 
 def nes_render_skip(text):
     """NROM/CNROM hidden-frame pixels only; retain all emulation side effects."""
@@ -252,7 +261,7 @@ int fm1_cdc_ready(usb_dev id) {
 }
 '''
     if composite:
-        text='/* GPL-3.0-only packet adaptation from Keitark/fm1-public d60e1b1. */\n#include "packet.h"\n'+text
+        text='/* Apache-2.0 project packet adaptation; see firmware/usb-audio/RELICENSE.md. */\n#include "packet.h"\n'+text
         text=function(text,'cdc_write_data', '''u32 fm1_cdc_write_packet(const usb_dev usb_id, u8 *buf, u32 len, unsigned generation)
 {
     if(usb_id!=FM1_USB_CONTROLLER || !cdc_hdl[usb_id] || !len || len>=MAXP_SIZE_CDC_BULKIN ||
@@ -322,4 +331,4 @@ if __name__=='__main__':
     if a.profile:
         if not a.nes_render:p.error('--profile requires --nes-render')
         result=nes_profile(result)
-    a.out.write_text(result,encoding='utf-8')
+    a.out.write_text(modified_notice(result),encoding='utf-8')

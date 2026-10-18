@@ -5,6 +5,12 @@ New, independently authored transport, container wrapper, browser sender and
 tests in this directory are provided under Apache License 2.0. This scope does
 not relicense the surrounding firmware, vendor SDK, boot resources or assets.
 
+The project-owned portions of the separately defined USB/audio component have
+an owner-authorized Apache-2.0 grant dated 2026-10-18; see the parent workspace's
+firmware/usb-audio/RELICENSE.md for its exact 20-path scope and retained historical
+GPL grants. That component is not part of this bounded MIDI source export.
+Unrelated GPL engines and the official M-VAVE APP retain their original terms.
+
 Factual interoperability references:
 - m-vave/fm1_open, b178ac43c25f010c60a878056fb5331fe693fd62:
   sdk/WebUpdate.js (GPLv3 with its SDK linking exception), sdk/Package.cs (MIT),

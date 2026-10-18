@@ -1,5 +1,6 @@
-# SPDX-License-Identifier: GPL-3.0-only
-# Reused from Keitark/fm1-mdx at 4141057; see licenses/fm1-mdx-GPL-3.0.txt.
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Keitark
+# See firmware/usb-audio/RELICENSE.md for the scoped license grant.
 from pathlib import Path
 import os
 import subprocess
