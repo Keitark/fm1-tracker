@@ -46,7 +46,11 @@ int fm1_mod_library_line(fm1_mod_library *lib,const char *line,fm1_mod_reply rep
         lib->ready=1;reply(ctx,"OK LIB READY\n");return 1;
     }
     if(!strcmp(line,"LIB POLL")){
-        if(lib->pending){snprintf(out,sizeof(out),"LIB PICK %04X %02X\n",lib->ticket,lib->selected);reply(ctx,out);}
+        if(lib->pending){
+            if(lib->saving)snprintf(out,sizeof(out),"LIB SAVE %04X\n",lib->ticket);
+            else snprintf(out,sizeof(out),"LIB PICK %04X %02X\n",lib->ticket,lib->selected);
+            reply(ctx,out);
+        }
         else reply(ctx,"LIB IDLE\n");
         return 1;
     }
@@ -68,5 +72,15 @@ void fm1_mod_library_move(fm1_mod_library *lib,int step){
 int fm1_mod_library_pick(fm1_mod_library *lib){
     if(!lib || !lib->ready || !lib->count || lib->pending)return -1;
     lib->ticket++;if(!lib->ticket)lib->ticket=1;
-    lib->pending=1;lib->failed=0;return 0;
+    lib->pending=1;lib->failed=0;lib->saving=0;return 0;
+}
+int fm1_mod_library_save(fm1_mod_library *lib){
+    if(!lib || !lib->ready || lib->pending)return -1;
+    lib->ticket++;if(!lib->ticket)lib->ticket=1;
+    lib->pending=1;lib->failed=0;lib->saving=1;return 0;
+}
+void fm1_mod_library_tick(fm1_mod_library *lib,uint32_t now){
+    if(lib && lib->pending && (uint32_t)(now-lib->last_ms)>10000u){
+        lib->pending=0;lib->failed=1;
+    }
 }

@@ -2,6 +2,14 @@
 #define FM1_TRACKER_VIEW_H
 #include "library.h"
 
+#define FM1_VIEW_PATTERN_COLUMNS 30u
+#define FM1_VIEW_LIST_COLUMNS 20u
+#define FM1_VIEW_HELP_TOPICS 5u
+enum { FM1_SAMPLE_FIELD_VOLUME, FM1_SAMPLE_FIELD_FINETUNE,
+       FM1_SAMPLE_FIELD_LOOP_START, FM1_SAMPLE_FIELD_LOOP_LENGTH,
+       FM1_SAMPLE_FIELD_COUNT };
+enum { FM1_VIEW_CONFIRM_NONE, FM1_VIEW_CONFIRM_NEW, FM1_VIEW_CONFIRM_BANK };
+
 /* Snapshot shared by the device and offline preview. No heap allocations. */
 typedef struct {
     char ui[10][40];
@@ -10,10 +18,16 @@ typedef struct {
     uint8_t page, loaded, channel, write, sample_mode;
     uint8_t field, block_mask[9];
     uint8_t peak[4];
+    int8_t wave_min[120], wave_max[120];
+    uint16_t beat_rows;
+    uint8_t wave_valid, wave_loop, wave_start, wave_end;
+    uint8_t overlay, sample_field, mute_mask;
 } fm1_tracker_view;
 
 typedef struct {
     uint8_t arranger, bank_open, quick_modifier, block_modifier, new_hold;
+    uint8_t sample_open, sample_field, help_open, help_topic;
+    uint8_t undo_count, redo_count, mute_mask, solo_mask, confirm, save_modifier;
     uint16_t bank_index, bank_count;
     char bank_name[24], notice[40];
 } fm1_tracker_view_context;

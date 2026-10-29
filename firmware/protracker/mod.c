@@ -166,6 +166,15 @@ int fm1_mod_set_sample_finetune(fm1_mod_document *d,unsigned sample,unsigned fin
     h=sample_header(sample)+24;
     if(d->bytes[h]!=finetune){d->bytes[h]=(uint8_t)finetune;d->dirty=1;}return 0;
 }
+int fm1_mod_set_sample_loop(fm1_mod_document *d,unsigned sample,size_t start,size_t length){
+    unsigned h;size_t size;uint8_t raw[4];
+    if(!document_layout_valid(d) || sample<1 || sample>31 || (start&1u) || (length&1u))return -1;
+    h=sample_header(sample);size=be16(d->bytes+h+22)*2u;
+    if(start>size || length>size-start)return -1;
+    put16(raw,(unsigned)(start/2));put16(raw+2,(unsigned)(length/2));
+    if(memcmp(d->bytes+h+26,raw,4)){memcpy(d->bytes+h+26,raw,4);d->dirty=1;}
+    return 0;
+}
 int fm1_mod_replace_sample(fm1_mod_document *d,unsigned slot,const char *name,
     const int8_t *pcm,size_t length,unsigned volume,unsigned finetune,
     size_t loop_start,size_t loop_length){
@@ -439,7 +448,7 @@ void fm1_mod_render(fm1_mod_player *p,int16_t *stereo,size_t frames){
                         else {v->active=0;continue;}
                     }
                 }
-                {int value=(int)sample[index]*v->volume;
+                if(!(p->mute_mask&(1u<<ch))){int value=(int)sample[index]*v->volume;
                     unsigned level=(unsigned)(value<0?-value:value)>>7;
                     if(level>64)level=64;
                     if(level>peaks[ch])peaks[ch]=(uint8_t)level;
@@ -657,6 +666,75 @@ int fm1_mod_editor_block_paste(fm1_mod_editor *e){
         if(memcmp(dst,src,4)){memcpy(dst,src,4);e->document->dirty=1;}
     }
     return 0;
+}
+static int block_bounds(const fm1_mod_editor *e,unsigned *pattern,unsigned *top,
+    unsigned *bottom,unsigned *left,unsigned *right){
+    fm1_mod_cell cell;
+    if(editor_cell(e,pattern,&cell,0) || !e->block_active || e->block_order!=e->order ||
+       e->block_anchor_row>=64 || e->block_end_row>=64 ||
+       e->block_anchor_channel>=4 || e->block_end_channel>=4)return -1;
+    *top=e->block_anchor_row<e->block_end_row?e->block_anchor_row:e->block_end_row;
+    *bottom=e->block_anchor_row>e->block_end_row?e->block_anchor_row:e->block_end_row;
+    *left=e->block_anchor_channel<e->block_end_channel?e->block_anchor_channel:e->block_end_channel;
+    *right=e->block_anchor_channel>e->block_end_channel?e->block_anchor_channel:e->block_end_channel;
+    return 0;
+}
+static void replace_cell_bytes(fm1_mod_document *d,unsigned pattern,unsigned row,
+    unsigned channel,const uint8_t raw[4]){
+    uint8_t *dst=d->bytes+cell_offset(pattern,row,channel);
+    if(memcmp(dst,raw,4)){memmove(dst,raw,4);d->dirty=1;}
+}
+int fm1_mod_editor_block_clear_cells(fm1_mod_editor *e){
+    static const uint8_t empty[4]={0};unsigned pattern,top,bottom,left,right,row,ch;
+    if(block_bounds(e,&pattern,&top,&bottom,&left,&right))return -1;
+    for(row=top;row<=bottom;row++)for(ch=left;ch<=right;ch++)replace_cell_bytes(e->document,pattern,row,ch,empty);
+    return 0;
+}
+int fm1_mod_editor_block_cut(fm1_mod_editor *e){
+    unsigned pattern,top,bottom,left,right;
+    if(block_bounds(e,&pattern,&top,&bottom,&left,&right))return -1;
+    if(fm1_mod_editor_block_copy(e))return -1;
+    return fm1_mod_editor_block_clear_cells(e);
+}
+int fm1_mod_editor_block_transpose(fm1_mod_editor *e,int semitones){
+    unsigned pattern,top,bottom,left,right,row,ch,i;
+    if(block_bounds(e,&pattern,&top,&bottom,&left,&right))return -1;
+    if(!semitones)return 0;
+    for(row=top;row<=bottom;row++)for(ch=left;ch<=right;ch++){
+        uint8_t raw[4];unsigned period,best=0,diff=65536;
+        memcpy(raw,e->document->bytes+cell_offset(pattern,row,ch),4);
+        period=((unsigned)(raw[0]&15)<<8)|raw[1];if(!period)continue;
+        for(i=0;i<36;i++){
+            unsigned note=fm1_mod_period_for_midi(i+36),distance=note>period?note-period:period-note;
+            if(distance<diff){diff=distance;best=i;}
+        }
+        period=fm1_mod_period_for_midi(36+clamped(best,semitones,35));
+        raw[0]=(uint8_t)((raw[0]&0xf0)|(period>>8));raw[1]=(uint8_t)period;
+        replace_cell_bytes(e->document,pattern,row,ch,raw);
+    }
+    return 0;
+}
+int fm1_mod_editor_block_fill(fm1_mod_editor *e,unsigned step){
+    unsigned pattern,top,bottom,left,right,row,ch;uint8_t source[4];
+    if(step>64 || block_bounds(e,&pattern,&top,&bottom,&left,&right))return -1;
+    if(!step)step=1;
+    memcpy(source,e->document->bytes+cell_offset(pattern,e->block_anchor_row,e->block_anchor_channel),4);
+    for(row=top;row<=bottom;row+=step)for(ch=left;ch<=right;ch++)replace_cell_bytes(e->document,pattern,row,ch,source);
+    return 0;
+}
+int fm1_mod_editor_insert_row(fm1_mod_editor *e){
+    static const uint8_t empty[4]={0};fm1_mod_cell cell;unsigned pattern,row;
+    if(editor_cell(e,&pattern,&cell,0))return -1;
+    for(row=63;row>e->row;row--)replace_cell_bytes(e->document,pattern,row,e->channel,
+        e->document->bytes+cell_offset(pattern,row-1,e->channel));
+    replace_cell_bytes(e->document,pattern,e->row,e->channel,empty);return 0;
+}
+int fm1_mod_editor_delete_row(fm1_mod_editor *e){
+    static const uint8_t empty[4]={0};fm1_mod_cell cell;unsigned pattern,row;
+    if(editor_cell(e,&pattern,&cell,0))return -1;
+    for(row=e->row;row<63;row++)replace_cell_bytes(e->document,pattern,row,e->channel,
+        e->document->bytes+cell_offset(pattern,row+1,e->channel));
+    replace_cell_bytes(e->document,pattern,63,e->channel,empty);return 0;
 }
 int fm1_mod_editor_sync_player(fm1_mod_editor *e,const fm1_mod_player *p){
     if(!e || !p || e->document!=p->document || p->current_row>=64 ||

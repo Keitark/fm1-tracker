@@ -60,6 +60,12 @@ static void modifiers_and_new_song(void){
     key(11,1,2100);event=key(3,1,2101);
     assert(event.kind==FM1_CONTROL_KEY && event.index==3);
     assert(!key(11,0,2102).kind); /* copy chord must not also run SEQ tap */
+    reset();assert(!key(13,1,3000).kind); /* REC is deferred to exclude a reversed NEW chord. */
+    assert(!key(11,1,3001).kind);
+    assert(fm1_tracker_controls_tick(&controls,3601).kind==FM1_CONTROL_NEW_SONG);
+    assert(!key(13,0,3602).kind && !key(11,0,3603).kind);
+    reset();assert(!key(13,1,4000).kind);
+    event=key(13,0,4010);assert(event.kind==FM1_CONTROL_KEY && event.index==13);
 }
 static void encoder_mapping_and_block(void){
     unsigned i;fm1_mod_cell cell={0,1,0,0};

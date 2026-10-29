@@ -12,6 +12,25 @@ import library_server as server
 
 
 class LibraryServerTests(unittest.TestCase):
+    def test_physical_save_exports_then_acknowledges_exact_request(self):
+        with tempfile.TemporaryDirectory() as root:
+            with patch.object(server.client, "save", return_value=(2108, 0x12345678)) as save, \
+                 patch.object(server.client, "exchange", return_value="OK LIB DONE") as exchange:
+                self.assertIsNone(server.handle_pick(None, [], "LIB SAVE 002A", Path(root)))
+            destination = save.call_args.args[1]
+            self.assertEqual(destination.parent, Path(root))
+            self.assertTrue(destination.name.startswith("fm1-song-"))
+            self.assertEqual(destination.suffix, ".mod")
+            exchange.assert_called_once_with(None, "LIB DONE 002A")
+
+    def test_physical_save_failure_is_reported_without_done(self):
+        with tempfile.TemporaryDirectory() as root:
+            with patch.object(server.client, "save", side_effect=OSError("disk full")), \
+                 patch.object(server.client, "exchange", return_value="OK LIB FAIL") as exchange:
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    server.handle_pick(None, [], "LIB SAVE 002B", Path(root))
+            exchange.assert_called_once_with(None, "LIB FAIL 002B")
+
     def test_discovery_rejects_oversize_and_keeps_supported_mod(self):
         data = bytearray(2108)
         data[950] = 1

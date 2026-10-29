@@ -41,6 +41,8 @@ int fm1_mod_set_title(fm1_mod_document *d, const char *title);
 int fm1_mod_set_sample_name(fm1_mod_document *d, unsigned sample, const char *name);
 int fm1_mod_set_sample_volume(fm1_mod_document *d, unsigned sample, unsigned volume);
 int fm1_mod_set_sample_finetune(fm1_mod_document *d, unsigned sample, unsigned finetune);
+int fm1_mod_set_sample_loop(fm1_mod_document *d, unsigned sample,
+                            size_t loop_start, size_t loop_length);
 /* PCM/loop sizes are even MOD word lengths. Failures leave all bytes unchanged.
  * pcm must be external storage or the same slot's existing payload. */
 int fm1_mod_replace_sample(fm1_mod_document *d, unsigned slot, const char *name,
@@ -75,6 +77,7 @@ typedef struct {
     uint8_t current_order, current_row; /* Last row whose notes were triggered. */
     const int8_t *preview_pcm;
     size_t preview_length, preview_loop_start, preview_loop_length;
+    uint8_t mute_mask; /* Song voices only; phase/effects and audition continue. */
 } fm1_mod_player;
 
 void fm1_mod_player_start(fm1_mod_player *p, fm1_mod_document *d);
@@ -135,6 +138,14 @@ int fm1_mod_editor_block_update(fm1_mod_editor *e);
 void fm1_mod_editor_block_clear(fm1_mod_editor *e);
 int fm1_mod_editor_block_copy(fm1_mod_editor *e);
 int fm1_mod_editor_block_paste(fm1_mod_editor *e);
+int fm1_mod_editor_block_cut(fm1_mod_editor *e);
+int fm1_mod_editor_block_clear_cells(fm1_mod_editor *e);
+int fm1_mod_editor_block_transpose(fm1_mod_editor *e, int semitones);
+/* Repeat the selection anchor's whole cell every step rows from the first
+ * selected row. Other rows/channels are preserved. step0 means1; maximum64. */
+int fm1_mod_editor_block_fill(fm1_mod_editor *e, unsigned step);
+int fm1_mod_editor_insert_row(fm1_mod_editor *e);
+int fm1_mod_editor_delete_row(fm1_mod_editor *e);
 int fm1_mod_editor_sync_player(fm1_mod_editor *e, const fm1_mod_player *p);
 void fm1_mod_format_cell(fm1_mod_cell cell, char out[12]);
 

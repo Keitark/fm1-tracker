@@ -89,6 +89,24 @@ def send_catalog(port, songs: list[Song]) -> None:
 
 
 def handle_pick(port, songs: list[Song], reply: str, autosave_dir: Path) -> Song | None:
+    saving = re.fullmatch(r"LIB SAVE ([0-9A-F]{4})", reply)
+    if saving:
+        ticket = saving[1]
+        try:
+            autosave_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            destination = autosave_dir / f"fm1-song-{stamp}-{uuid4().hex[:8]}.mod"
+            size, crc = client.save(port, destination)
+            if client.exchange(port, f"LIB DONE {ticket}") != "OK LIB DONE":
+                raise RuntimeError("Song is saved on PC, but request acknowledgement failed")
+            print(f"Saved FM-1 song to {destination}: {size} bytes, CRC32 {crc:08X}", flush=True)
+            return None
+        except Exception:
+            try:
+                client.exchange(port, f"LIB FAIL {ticket}")
+            except Exception:
+                pass
+            raise
     match = re.fullmatch(r"LIB PICK ([0-9A-F]{4}) ([0-9A-F]{2})", reply)
     if not match:
         if reply == "LIB IDLE":
@@ -145,7 +163,12 @@ def main() -> None:
         print("On-device file chooser ready. Press Ctrl+C to stop the PC service.", flush=True)
         while True:
             reply = client.exchange(port, "LIB POLL")
-            handle_pick(port, songs, reply, args.autosave_dir)
+            try:
+                handle_pick(port, songs, reply, args.autosave_dir)
+            except (OSError, RuntimeError, ValueError, TimeoutError) as error:
+                # A full disk or rejected load must leave the service available
+                # for a deliberate retry on the device.
+                print(f"FM-1 request failed: {error}", flush=True)
             time.sleep(.2)
 
 

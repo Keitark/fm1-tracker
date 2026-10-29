@@ -33,7 +33,17 @@ SCREENS = {
     "song-arranger": "SONG ORDER ARRANGER",
     "bank-audition": "ACTIVE BANK / AUDITION",
     "quick-sample": "QUICK SAMPLE / BIND FEEDBACK",
-    "sample-list": "SAMPLE LIST",
+    "sample-list": "SONG SAMPLE / METADATA + WAVE",
+    "sample-empty": "EMPTY SONG SAMPLE SLOT",
+    "help-pattern": "HELP / PATTERN CONTROLS",
+    "help-blocks": "HELP / HISTORY + BLOCKS",
+    "help-sample": "HELP / SAMPLE + BANK",
+    "help-arranger": "HELP / ARRANGER",
+    "help-transport": "HELP / TRANSPORT + FILES",
+    "confirm-new": "NEW SONG / CONFIRMATION",
+    "confirm-bank": "REPLACE SONG SAMPLE / CONFIRM",
+    "muted-history": "MUTE / SOLO / UNDO AVAILABILITY",
+    "save-shortcuts": "SAVE MODIFIER / DIRECT SHORTCUTS",
     "usb-file-chooser": "USB FILE CHOOSER",
     "playing-pattern": "PATTERN LOOP",
     "boundary-row00": "ROW 00 / FIXED CURSOR",
@@ -96,7 +106,8 @@ def main() -> None:
         raise FileNotFoundError(f"mod_view_preview executable missing in {build}")
     output.mkdir(parents=True, exist_ok=True)
     result = run([str(executable), str(song), str(output), str(args.bank.resolve())])
-    fields = ("page", "running", "write", "field", "order", "row", "channel", "sample", "arranger", "bank")
+    fields = ("page", "running", "write", "field", "order", "row", "channel", "sample", "arranger", "bank",
+              "sample_field", "help", "help_topic", "confirm", "mute_mask", "solo_mask", "undo", "redo", "save_modifier")
     states = {}
     for line in result.stdout.splitlines():
         parts = line.split("\t")
@@ -122,6 +133,7 @@ def main() -> None:
         screens[key] = image
     contact_sheet(screens, output, ("playing-song", "edit-audition", "write-note", "write-param"), "fm1-tracker-screens.png")
     contact_sheet(screens, output, ("block-selection", "song-arranger", "bank-audition", "quick-sample"), "fm1-tracker-workflow.png")
+    contact_sheet(screens, output, ("sample-list", "help-pattern", "confirm-bank", "muted-history"), "fm1-tracker-editing.png")
     manifest = {
         "description": CAPTION,
         "renderer": "firmware/protracker/view.c",

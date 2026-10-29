@@ -14,7 +14,12 @@
 #include "packet.h"
 #include <stdio.h>
 #include <string.h>
+#if defined(FM1_MOD_PLAYER) && !defined(FM1_UAC_TARGET_HOST)
+/* CPU-only FIFOs; endpoint DMA remains aligned ordinary SRAM below. */
+static fm1_uac_bridge bridge __attribute__((section(".memp_memory_x"),aligned(4)));
+#else
 static fm1_uac_bridge bridge;
+#endif
 static spinlock_t lock;
 static unsigned armed;
 static volatile unsigned mic_bits;
