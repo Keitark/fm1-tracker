@@ -3,6 +3,22 @@
 ProTracker-style four-channel MOD tracker firmware for the M-VAVE FM-1.
 Start with [tracker controls and status](firmware/protracker/README.md).
 
+## Current development — 2026-10-30
+
+This branch contains the latest editing workflow in
+[PR #21](https://github.com/Keitark/fm1-tracker/pull/21): eight-level undo/redo,
+block and arrangement tools, sample waveform/loop controls, mute/solo,
+contextual help, PC saving and a combined UAC/UVC candidate. See the
+[first-song tutorial](firmware/protracker/WORKFLOW_20.md) and
+[build/installation record](docs/TRACKER_WORKFLOW20_20261029.md).
+
+The revision passes 64 software checks and includes 25 rendered screen states.
+It remains unflashed and awaits physical acceptance; the connected unit was
+confirmed as stock V15. Publishing this source does not qualify a firmware image
+for installation. Existing component notices apply; no blanket license is added.
+The [repository publication review](docs/REPOSITORY_PUBLICATION_20261030.md)
+records the source/history and private-material boundary.
+
 The [FM1 Forge diagnostic firmware and module starter](firmware/forge/README.md)
 adds a shared HAL for all mapped buttons/keys, encoders and master volume,
 asynchronous LCD rendering, bounded test tones, optional USB audio, and
@@ -20,10 +36,11 @@ baseline guard. Normal target builds keep installation disabled pending loader
 compatibility and bench acceptance; no device has been flashed by this work.
 The [linked candidate evidence](docs/COMMON_MIDI_IMPLEMENTATION_20261018.md)
 records the exact build, tests and unqualified physical gates.
-The existing manufacturer stock updater remains separate. Public source is
-being prepared using an [explicit inventory](tools/public-release/README.md),
-with [component licenses preserved](docs/LICENSING.md); the private repository
-and its history are not published by that preparation.
+The existing manufacturer stock updater remains separate. The historical
+[candidate exporter](tools/public-release/README.md) prepares a narrow source
+snapshot from an explicit inventory and does not publish a repository or its
+history. The owner's later repository-publication request is separate from that
+tool. [Component licenses remain preserved](docs/LICENSING.md).
 
 This workspace contains a read-only research baseline for the M-VAVE FM-1 pocket FM synthesizer, captured on 2026-08-12.
 
