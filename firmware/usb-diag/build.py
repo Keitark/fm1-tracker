@@ -16,6 +16,38 @@ from verify_stock_power import STOCK,verify
 import vendor_overlay
 from embed_rom50 import generate,rom_path,ROMS
 
+def tracker_build_identity(paths,archives,sources,*,out,speed_sources,defines,flags,includes,sdk_pin=SDK_PIN,root=ROOT,sdk=SDK):
+    """Hash offline inputs independently of checkout/output location.
+
+    The generated identity translation unit is excluded from its own seed.
+    SDK source closure is the clean pinned revision plus exact archives/overlays.
+    """
+    out,root,sdk=Path(out).resolve(),Path(root).resolve(),Path(sdk).resolve()
+    generated=out/'fm1-tracker-build-id.c'
+    def logical(path):
+        path=Path(path).resolve()
+        for base,prefix in ((out,'$BUILD/'),(sdk,'sdk/'),(root,'')):
+            if path.is_relative_to(base):return prefix+path.relative_to(base).as_posix()
+        return '$EXTERNAL/'+path.name
+    def inventory(items):
+        result={}
+        for path in items:
+            path=Path(path).resolve()
+            if path==generated:continue
+            name,digest=logical(path),hashlib.sha256(path.read_bytes()).hexdigest()
+            if name in result and result[name]!=digest:raise ValueError('Ambiguous tracker identity input: '+name)
+            result[name]=digest
+        return dict(sorted(result.items()))
+    payload={'schema':1,'sdk_commit':sdk_pin,'inputs':inventory(paths),'archives':inventory(archives),
+             'source_order':[logical(s) for s in sources if Path(s).resolve()!=generated],
+             'speed_sources':sorted(logical(s) for s in speed_sources if Path(s).resolve()!=generated),
+             'defines':list(defines),'flags':list(flags),
+             'includes':['-I'+logical(i[2:]) if i.startswith('-I') else i for i in includes],
+             'link_flags':['--wrap=boot_info_init','--wrap=memory_init','--undefined=memory_init',
+                           'mcpu=r3','mattr=+fprev1','pi32v2-large-program=true']}
+    digest=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode('utf-8')).hexdigest()
+    return digest,payload
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--controller',type=int,choices=(0,),required=True,
@@ -64,6 +96,8 @@ def main():
     p.add_argument('--lcd-stock-dma',action='store_true',help='Stock setup-before-delay, DMA parameters, fixed register snapshots; requires --lcd-stock-fill')
     p.add_argument('--lcd-stock-sequence',action='store_true',help='Stock PA2/GPIO setup, scheduler delays and 40-byte DMA black first fill; requires --lcd-stock-dma')
     a=p.parse_args(); out=a.out.resolve(); out.mkdir(parents=True,exist_ok=True)
+    tracker_cdc=a.mod and not a.mod_source_dir
+    if tracker_cdc and a.usb_midi_update:p.error('Current tracker uses CDC verification and excludes runtime MIDI')
     if a.usb_midi_update and (a.forge_uvc or a.mod_uvc):p.error('USB MIDI update EP4 IN conflicts with UVC in this candidate')
     if (a.mod_usb_audio or a.mod_uvc) and (not a.mod or a.mod_source_dir):p.error('Tracker USB options require the current --mod source profile')
     if a.factory_diag:
@@ -194,6 +228,7 @@ def main():
             if not (mod/name).is_file():raise ValueError('Incomplete MOD source profile: '+str(mod/name))
         includes=['-I'+str(mod)]+includes
         mod_names=('mod.c','usb.c','library.c')+tuple(n for n in ('view.c','controls.c','bank.c','history.c','session.c','routing.c') if (mod/n).is_file())+('target.c',)
+        if tracker_cdc:mod_names+=('build_identity.c',)
         mod_sources=[mod/n for n in mod_names]+[NES/'src/fm1_volume.c',NES/'src/fm1_audio_queue.c']
         sources+=mod_sources;speed_sources.update(mod_sources)
         optional=[]
@@ -297,6 +332,7 @@ def main():
     if a.usb_midi_update:used.write_text(used.read_text()+'fm1_usb_midi_init\nfm1_usb_midi_poll\nfm1_midi_desc_config\nfm1_midi_descriptor\nfm1_midi_build_id\nfm1_midi_install_enabled\nfm1_midi_update_message\nfm1_midi_update_poll\n')
     if a.mdx:used.write_text(used.read_text()+'fm1_mdx_load\nfm1_mdx_render\nfm1_mdx_usb_command\nfm1_wl82_keyscan_async_raw\n')
     if a.mod:used.write_text(used.read_text()+'fm1_mod_open\nfm1_mod_render\nfm1_mod_usb_command\nfm1_wl82_keyscan_async_raw\n')
+    if tracker_cdc:used.write_text(used.read_text()+'fm1_tracker_build_id\nfm1_tracker_fwinfo\n')
     if a.nes_smb1:used.write_text(used.read_text()+'fm1_board_run\nfm1_display_write\nfm1_audio_startup_process24\nfm1_nes_run\n')
     ld=(out/'sdk.ld').read_text()
     for old,new in (('*(.data)','*(.data .data.*)'),('*(.bss)','*(.bss .bss.*)')):
@@ -305,6 +341,22 @@ def main():
         ld=vendor_overlay.once(ld,'*('+section+')','/* no persistent cfg repair */')
     ld+='\nSECTIONS { /DISCARD/ : { *(.syscfg.2.ops) *(.syscfg.1.ops) } }\n'
     (out/'sdk.ld').write_text(ld)
+    libs=[SDK/'include_lib/newlib/pi32v2-lib'/n for n in ('libm.a','libc.a','libcompiler_rt.a')]
+    libs += [SDK/'cpu/wl82/liba'/n for n in ('cpu.a','event.a','system.a','cfg_tool.a','fs.a','common_lib.a','update.a')]
+    tracker_build_id=None;tracker_identity_paths=[];tracker_identity_inputs=None
+    if tracker_cdc:
+        tracker_identity_paths=sources+list(HERE.glob('*.h'))+list(HERE.glob('*.py'))+list((NES/'include').glob('*.h'))+list((NES/'boot').glob('*.h'))
+        for folder in ('protracker','forge','usb-audio','usb-video'):
+            tracker_identity_paths+=list((HERE.parent/folder).glob('*.h'))
+        tracker_identity_paths += [NES/name for name in ('build_boot.py','audit_boot.py','audit_power.py','audit_pre_os.py','audit_usb_packet.py','build_stock_image.py','embed_rom50.py','verify_stock_power.py')]
+        tracker_identity_paths += [MAKE,out/'sdk.ld',used]+[Path(name) for name in overlays]
+        if a.mod_bank:tracker_identity_paths += [a.mod_bank.resolve(),mod_tools/'tools/fm1_bank.py']
+        if a.mod_default_song:tracker_identity_paths.append(a.mod_default_song.resolve())
+        tracker_build_id,tracker_identity_inputs=tracker_build_identity(tracker_identity_paths,libs,sources,out=out,speed_sources=speed_sources,defines=defines,flags=flags,includes=includes)
+        (out/'tracker-build-identity.json').write_text(json.dumps({'build_id':tracker_build_id,**tracker_identity_inputs},indent=2)+'\n',encoding='utf-8')
+        identity=out/'fm1-tracker-build-id.c'
+        identity.write_text('#include <stdint.h>\nconst uint8_t fm1_tracker_build_id[32]={'+','.join('0x'+tracker_build_id[i:i+2] for i in range(0,64,2))+'};\n',encoding='ascii')
+        sources.append(identity)
     if a.usb_midi_update:
         closure=hashlib.sha256()
         closure_paths=sources+list(HERE.glob('*.h'))+list((NES/'include').glob('*.h'))+list((NES/'boot').glob('*.h'))
@@ -325,8 +377,6 @@ def main():
         if source in speed_sources:
             source_flags=[f for f in flags if f not in ('-O0','-O1','-O2','-O3','-Os','-Oz','-Ofast')]+['-O2']
         run([TC/'clang.exe',*source_flags,*defines,*includes,'-c',source,'-o',obj])
-    libs=[SDK/'include_lib/newlib/pi32v2-lib'/n for n in ('libm.a','libc.a','libcompiler_rt.a')]
-    libs += [SDK/'cpu/wl82/liba'/n for n in ('cpu.a','event.a','system.a','cfg_tool.a','fs.a','common_lib.a','update.a')]
     elf=out/'fm1-usb-diag.elf'
     run([TC/'pi32v2-lto-wrapper.exe','-o',elf,*objects,'--start-group',*libs,'--end-group',
          '-T'+str(out/'sdk.ld'),'-M='+str(out/'fm1-usb-diag.map'),'--wrap=boot_info_init','--wrap=memory_init',
@@ -338,7 +388,7 @@ def main():
     app=out/'fm1-usb-diag.app.bin';app.write_bytes(b''.join(parts))
     (out/'symbols.txt').write_text(run([TC/'llvm-nm.exe','-n','-S',elf]))
     (out/'disassembly.asm').write_text(run([TC/'llvm-objdump.exe','-d','-mcpu=r3',elf]))
-    report=audit(elf.read_bytes(),app.read_bytes(),usb_only=True,usb_peripheral_tests=a.peripheral_tests,usb_nes=a.nes_smb1,usb_mdx=a.mdx,usb_mod=a.mod,usb_audio=usb_audio,usb_video=usb_video,factory_diag=a.factory_diag,factory_user_module=bool(a.forge_user_module),factory_clock=a.forge_clock,factory_hal_access=hal_access if a.factory_diag else None,rom='smb1' if a.nes_smb1 else 'rom50',require_boot_trace=True,require_board_power=True)
+    report=audit(elf.read_bytes(),app.read_bytes(),tracker_build_id=tracker_build_id,usb_only=True,usb_peripheral_tests=a.peripheral_tests,usb_nes=a.nes_smb1,usb_mdx=a.mdx,usb_mod=a.mod,usb_audio=usb_audio,usb_video=usb_video,factory_diag=a.factory_diag,factory_user_module=bool(a.forge_user_module),factory_clock=a.forge_clock,factory_hal_access=hal_access if a.factory_diag else None,rom='smb1' if a.nes_smb1 else 'rom50',require_boot_trace=True,require_board_power=True)
     (out/'static-audit.json').write_text(json.dumps(report,indent=2)+'\n')
     result={'status':'LINKED_USB_DIAGNOSTIC_UNTESTED','flashable':False,'usb_controller_candidate':a.controller,
             'controller_routing_verified':False,'sdk_commit':SDK_PIN,'application_bytes':app.stat().st_size,
@@ -388,6 +438,11 @@ def main():
             'source_sha256':{str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in sources+list(HERE.glob('*.h'))+list(HERE.glob('*.py'))+
                 [NES/n for n in ('audit_boot.py','audit_power.py','audit_pre_os.py','build_stock_image.py')]+list((NES/'include').glob('*.h'))+list((NES/'boot').glob('*.h'))},
             'archive_sha256':{str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in libs}}
+    if tracker_cdc:
+        result['tracker_cdc_contract']={'profile':'protracker','identity':'MOD-EDITOR/1','build_id':tracker_build_id,
+            'query':'FWINFO','nonce_bytes':16,'vid':'3654','pid':'5155','installation_enabled':False,'hardware_accepted':False}
+        result['tracker_build_identity_inputs']=tracker_identity_inputs
+        result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in tracker_identity_paths})
     if a.usb_midi_update:
         result['usb_midi_update_contract']={'family':8,'build_id':midi_build_id,'loader_compatible':False,'installation_enabled':False,'endpoint_in':'0x84','endpoint_out':'0x03','midi_interfaces':[5,6] if usb_audio else [2,3],'hardware_accepted':False,'update_engine':'pinned SDK single-bank active update; install guard disabled'}
         result['source_sha256'].update({str(s):hashlib.sha256(s.read_bytes()).hexdigest() for s in (HERE.parent/'usb-midi').glob('*.h')})

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(fm1_protracker C)
 enable_testing()
-add_library(fm1_mod mod.c usb.c library.c view.c controls.c bank.c history.c session.c routing.c)
+add_library(fm1_mod mod.c usb.c library.c view.c controls.c bank.c history.c session.c routing.c build_identity.c)
 target_include_directories(fm1_mod PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(fm1_mod PUBLIC c_std_11)
 add_executable(mod_tests tests/test_mod.c)
@@ -29,6 +29,10 @@ add_test(NAME tracker_pc_save_requests COMMAND library_save_tests)
 add_executable(routing_tests tests/test_routing.c)
 target_link_libraries(routing_tests PRIVATE fm1_mod)
 add_test(NAME tracker_stereo_speaker_routing COMMAND routing_tests)
+
+add_executable(tracker_build_identity_tests tests/test_build_identity.c)
+target_link_libraries(tracker_build_identity_tests PRIVATE fm1_mod)
+add_test(NAME tracker_cdc_build_identity COMMAND tracker_build_identity_tests)
 
 foreach(profile native padded)
     add_executable(tracker_capture_${profile}_tests tests/test_tracker_capture.c

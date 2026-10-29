@@ -92,7 +92,8 @@ class TrackerAuditTests(unittest.TestCase):
         app = b''.join(elf[sections[name][4]:sections[name][4] + sections[name][5]] for name in PARTS)
         options = dict(usb_only=True, usb_peripheral_tests=True, usb_mod=True,
                        usb_audio=True, usb_video=True,
-                       require_boot_trace=True, require_board_power=True)
+                       require_boot_trace=True, require_board_power=True,
+                       tracker_build_id=getattr(self,'build_id',None))
         options.update(flags)
         return audit(elf, app, **options)
 
@@ -257,6 +258,93 @@ class TrackerAuditTests(unittest.TestCase):
     def test_mod_cannot_be_a_factory_profile(self):
         with self.assertRaises(ValueError):
             self.check(factory_diag=True)
+
+
+class TrackerCdcIdentityTests(unittest.TestCase):
+    """A source-identified CDC tracker must reject forged identity/query code."""
+    @classmethod
+    def setUpClass(cls):
+        required=('tracker-build-identity.json','fm1-usb-diag.elf','fm1-usb-diag.app.bin')
+        if not all((BUILD/name).is_file() for name in required):
+            if REQUIRE_ACTUAL and 'v15cdc' in BUILD.name:raise ValueError('Tracker CDC identity fixture missing')
+            raise unittest.SkipTest('Build predates the CDC build identity contract')
+        cls.seed=json.loads((BUILD/required[0]).read_text(encoding='utf-8'))
+        cls.build_id=cls.seed['build_id']
+        cls.elf=(BUILD/required[1]).read_bytes();cls.app=(BUILD/required[2]).read_bytes()
+        cls.image=Elf32(cls.elf);cls.symbols=cls.image.symbols;cls.sections=cls.image.sections
+
+    check=TrackerAuditTests.check
+    corrupt=TrackerAuditTests.corrupt
+    corrupt_symbol=TrackerAuditTests.corrupt_symbol
+    call_offset=TrackerAuditTests.call_offset
+
+    def test_actual_identity_matches_canonical_seed_and_read_only_report(self):
+        payload={k:v for k,v in self.seed.items() if k!='build_id'}
+        self.assertEqual(hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode('utf-8')).hexdigest(),self.build_id)
+        self.assertEqual(self.check()['tracker_cdc_identity'],{'symbol':'fm1_tracker_build_id','build_id':self.build_id,'nonce_bytes':16,'read_only':True})
+
+    def test_manifest_identity_contract_is_exact_and_unaccepted(self):
+        manifest=json.loads((BUILD/'build-manifest.json').read_text(encoding='utf-8'))
+        expected={'profile':'protracker','identity':'MOD-EDITOR/1','build_id':self.build_id,'query':'FWINFO','nonce_bytes':16,'vid':'3654','pid':'5155','installation_enabled':False,'hardware_accepted':False}
+        self.assertEqual(manifest.get('tracker_cdc_contract'),expected)
+        self.assertEqual(manifest.get('tracker_build_identity_inputs'),{k:v for k,v in self.seed.items() if k!='build_id'})
+        self.assertEqual(manifest.get('static_audit',{}).get('tracker_cdc_identity'),self.check()['tracker_cdc_identity'])
+        self.assertIs(manifest.get('usb_midi_update'),False)
+
+    def test_changed_identity_bytes_rejected(self):
+        with self.assertRaisesRegex(ValueError,'differs from source closure'):self.check(self.corrupt('fm1_tracker_build_id'))
+
+    def test_identity_symbol_size_is_exact(self):
+        with self.assertRaisesRegex(ValueError,'immutable 32-byte'):self.check(self.corrupt_symbol('fm1_tracker_build_id','size',31))
+
+    def test_identity_symbol_must_own_read_only_section(self):
+        elf=bytearray(self.elf)
+        index=list(self.sections).index('.ram0_data')
+        struct.pack_into('<H',elf,self.image.symbol_entries['fm1_tracker_build_id']+14,index)
+        with self.assertRaisesRegex(ValueError,'immutable 32-byte'):self.check(bytes(elf))
+
+    def test_expected_identity_cannot_silently_be_missing(self):
+        elf=bytearray(self.elf);elf[self.image.symbol_names['fm1_tracker_build_id']]^=1
+        with self.assertRaisesRegex(ValueError,'Missing tracker CDC build identity'):self.check(bytes(elf))
+
+    def test_wrong_expected_identity_rejected(self):
+        wrong=('0' if self.build_id[0]!='0' else '1')+self.build_id[1:]
+        with self.assertRaisesRegex(ValueError,'differs from source closure'):self.check(tracker_build_id=wrong)
+
+    def test_expected_identity_requires_full_lowercase_hex(self):
+        for invalid in ('a'*63,'g'*64,'A'*64,0,False):
+            with self.subTest(kind=type(invalid).__name__),self.assertRaisesRegex(ValueError,'Invalid expected tracker CDC'):self.check(tracker_build_id=invalid)
+
+    def test_wire_identity_constant_rejected(self):
+        with self.assertRaisesRegex(ValueError,'wire identity|query constant'):self.check(self.corrupt('fm1_tracker_fwinfo.prefix'))
+
+    def test_hex_constant_rejected(self):
+        with self.assertRaisesRegex(ValueError,'query constant'):self.check(self.corrupt('fm1_tracker_fwinfo.hex'))
+
+    def test_query_validation_instruction_rejected(self):
+        with self.assertRaisesRegex(ValueError,'read-only instructions'):self.check(self.corrupt('fm1_tracker_fwinfo',0x0c))
+
+    def test_query_identity_pointer_rejected(self):
+        with self.assertRaisesRegex(ValueError,'constant pointer'):self.check(self.corrupt('fm1_tracker_fwinfo',0x76))
+
+    def test_query_copy_call_rejected(self):
+        with self.assertRaisesRegex(ValueError,'copy call'):self.check(self.corrupt('fm1_tracker_fwinfo',0x6c))
+
+    def test_query_memory_copy_cannot_be_replaced_with_side_effect(self):
+        elf=bytearray(self.elf);elf[self.image.file_offset(self.symbols['memmove'][0])]^=4
+        with self.assertRaisesRegex(ValueError,'memory-copy instructions'):self.check(bytes(elf))
+
+    def test_dispatch_compare_cannot_be_replaced_with_side_effect(self):
+        with self.assertRaisesRegex(ValueError,'prefix-compare instructions'):self.check(self.corrupt('strncmp'))
+
+    def test_first_dispatch_instructions_rejected(self):
+        with self.assertRaisesRegex(ValueError,'first-dispatch instructions'):self.check(self.corrupt('fm1_mod_usb_command',0x1c))
+
+    def test_query_dispatch_cannot_be_bypassed(self):
+        with self.assertRaisesRegex(ValueError,'dispatch exactly once'):self.check(self.corrupt('fm1_mod_usb_command',0xae))
+
+    def test_query_reply_must_return_without_application_mutation(self):
+        with self.assertRaisesRegex(ValueError,'first-dispatch instructions'):self.check(self.corrupt('fm1_mod_usb_command',0x1ce))
 
 
 if __name__ == '__main__':

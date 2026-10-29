@@ -114,6 +114,10 @@ connects to the FM-1.
 
 ## Installation boundary
 
+The [2026-10-30 stock V15 MIDI installer](TRACKER_V15_MIDI_INSTALL_20261030.md)
+adds the tracker-specific FWSC/CDC route. The earlier boundary below describes
+the state before that implementation; hardware acceptance remains separate.
+
 The private raw reference package is SHA-256
 `57a1ac2e16929a15ecd9a6bd902f0b8f8ab4fd9f34b8f16963cc319718d2d2a6`.
 All nine layout/CRC/preservation checks pass against the retained **V14 layout**.

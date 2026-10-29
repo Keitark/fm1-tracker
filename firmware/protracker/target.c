@@ -22,6 +22,7 @@
 #include "bank.h"
 #include "audio_queue.h"
 #include "routing.h"
+#include "build_identity.h"
 #ifdef FM1_USB_AUDIO
 #include "target.h"
 #endif
@@ -113,6 +114,12 @@ static void status(void *u,char *out,size_t n){
         control.frames,control.underruns,control.ui_frames,control.ui_strips);
 }
 int fm1_mod_usb_command(const char *s,uint32_t now,fm1_mod_reply reply,void *ctx){
+    if(!strncmp(s,"FWINFO",6)){
+        char line[FM1_TRACKER_FWINFO_RESPONSE_BYTES];
+        if(fm1_tracker_fwinfo(s,line,sizeof(line)))reply(ctx,line);
+        else reply(ctx,"ERR FWINFO\n");
+        return 1;
+    }
     fm1_mod_usb_io io={0,idle,request,status};unsigned f,was_loaded;int rc;
     if(!strcmp(s,"MOD KEY")){
         char line[192];fm1_wl82_keyscan_failure failure;
