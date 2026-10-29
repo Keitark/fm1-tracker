@@ -17,10 +17,16 @@ def prepare(folder, baseline_sha256, baseline=None):
     factory = manifest.get('factory_diag') is True
     usb_audio = manifest.get('usb_audio', False)
     usb_video = manifest.get('usb_video', False)
-    if type(usb_audio) is not bool or (usb_audio and not (mdx or factory)):
-        raise ValueError('Composite audio requires an explicit MDX or factory build profile')
-    if type(usb_video) is not bool or (usb_video and (not factory or manifest.get('forge_project_schema')!=3)):
-        raise ValueError('USB video requires an explicit Forge project schema3')
+    if type(usb_audio) is not bool or (usb_audio and not (mdx or mod or factory)):
+        raise ValueError('Composite audio requires an explicit MDX, MOD or factory build profile')
+    if mod and (type(manifest.get('mod_usb_audio',False)) is not bool or
+                type(manifest.get('mod_uvc',False)) is not bool or
+                usb_audio!=manifest.get('mod_usb_audio',False) or
+                usb_video!=manifest.get('mod_uvc',False)):
+        raise ValueError('Tracker USB classes must match the explicit current MOD profile flags')
+    if type(usb_video) is not bool or (usb_video and not
+            (mod or (factory and manifest.get('forge_project_schema')==3))):
+        raise ValueError('USB video requires an explicit MOD profile or Forge project schema3')
     sys.path.insert(0, str(ROOT / 'firmware/nes'))
     import build_stock_image as pack
     if factory:

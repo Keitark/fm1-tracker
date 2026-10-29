@@ -20,16 +20,18 @@ def require(condition,message):
     if not condition: raise ValueError(message)
 
 
-def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,require_boot_trace=False,require_board_power=False,require_screen_first=False,usb_only=False,usb_peripheral_tests=False,usb_nes=False,usb_mdx=False,usb_audio=False,usb_mod=False,factory_diag=False,factory_user_module=False,factory_clock='sdk-default',factory_hal_access=None,usb_video=False):
-    require(not usb_audio or usb_mdx or factory_diag,'Composite audio requires an explicit MDX or factory profile')
+def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,require_boot_trace=False,require_board_power=False,require_screen_first=False,usb_only=False,usb_peripheral_tests=False,usb_nes=False,usb_mdx=False,usb_audio=False,usb_mod=False,factory_diag=False,factory_user_module=False,factory_clock='sdk-default',factory_hal_access=None,usb_video=False,tracker_build_id=None):
+    require(type(usb_audio) is bool and (not usb_audio or usb_mdx or usb_mod or factory_diag),'Composite audio requires an explicit MDX, MOD or factory profile')
     require(not factory_diag or (usb_only and usb_peripheral_tests and not (usb_nes or usb_mdx or usb_mod)),'Factory profile must be asset-free CDC peripheral diagnostics')
     require(not factory_user_module or factory_diag,'User module requires explicit factory profile')
-    require(type(usb_video) is bool and (not usb_video or factory_diag),'USB video requires the explicit Forge factory profile')
+    require(type(usb_video) is bool and (not usb_video or factory_diag or usb_mod),'USB video requires an explicit MOD or Forge factory profile')
     if factory_hal_access is not None:
         require(factory_diag and isinstance(factory_hal_access,dict) and set(factory_hal_access)=={'buttons','encoders','volume','lcd','audio'} and all(type(v) is bool for v in factory_hal_access.values()),'Invalid factory HAL access selection')
     require(not usb_nes or (usb_only and usb_peripheral_tests and rom=='smb1'),'NES CDC requires explicit SMB1 peripheral profile')
     require(not usb_mdx or (usb_only and usb_peripheral_tests and not usb_nes),'MDX requires a separate CDC peripheral profile')
     require(not usb_mod or (usb_only and usb_peripheral_tests and not usb_nes and not usb_mdx),'MOD requires a separate CDC peripheral profile')
+    tracker_composite=usb_mod and (usb_audio or usb_video)
+    require(tracker_build_id is None or (usb_mod and isinstance(tracker_build_id,str) and len(tracker_build_id)==64 and all(c in '0123456789abcdef' for c in tracker_build_id)),'Invalid expected tracker CDC build identity')
     require(not usb_peripheral_tests or usb_only,'Peripheral diagnostic requires USB transport audit')
     require(not usb_only or not (require_peripherals or display_only or require_screen_first),'Conflicting USB-only audit')
     require(not(display_only and require_peripherals),'Conflicting diagnostic/peripheral audit')
@@ -100,6 +102,50 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             n=6 if body[off:off+2]==b'\x80\xff' else 4 if body[off]&0xc0==0x80 and body[off+1]==0xea else 2 if body[off]&0x8f==1 and body[off+1]&0xe0==0x80 else 0
             if n and off+n<=size and call_target(body[off:off+n],start+off)==target:hits.append(off)
         return hits
+    tracker_identity=None
+    if tracker_build_id is not None or 'fm1_tracker_build_id' in symbols:
+        require(usb_mod and not usb_midi,'Tracker CDC identity requires MOD without runtime MIDI')
+        require('fm1_tracker_build_id' in symbols,'Missing tracker CDC build identity')
+        address,size,index=symbols['fm1_tracker_build_id'];owner=sections['.text']
+        require(size==32 and index==raw.index(owner) and owner[3]<=address and address+size<=owner[3]+owner[5] and not owner[2]&1,'Tracker CDC build identity must be immutable 32-byte XIP data')
+        build_id=code_at(address,32).hex()
+        require(build_id!='00'*32 and (tracker_build_id is None or build_id==tracker_build_id),'Tracker CDC build identity differs from source closure')
+        require('fm1_tracker_fwinfo' in symbols and symbols['fm1_tracker_fwinfo'][1]>0,'Missing tracker CDC read-only query helper')
+        require(len(calls_to('fm1_mod_usb_command','fm1_tracker_fwinfo'))==1,'Tracker CDC query must dispatch exactly once')
+        require(b'FM1FW/1 MOD-EDITOR/1 ' in app,'Missing tracker CDC wire identity')
+        # Reviewed O2 helper: validate all 39 command bytes before any output;
+        # copy a constant prefix, read 32 volatile identity bytes, hex encode,
+        # echo 32 nonce bytes, then LF/NUL. Only memmove is called. Its complete
+        # SDK assembly body and strncmp entry dispatch are pinned below.
+        require(symbols['fm1_tracker_fwinfo'][1]==200,'Tracker CDC query helper size changed')
+        query=bytearray(code_at(value('fm1_tracker_fwinfo'),200))
+        for name,size,expected in (('fm1_tracker_fwinfo.prefix',22,b'FM1FW/1 MOD-EDITOR/1 \0'),
+                                   ('fm1_tracker_fwinfo.hex',17,b'0123456789abcdef\0')):
+            require(name in symbols,'Missing tracker CDC query constant '+name)
+            address,length,index=symbols[name]
+            require(length==size and index==raw.index(owner) and owner[3]<=address and address+size<=owner[3]+owner[5] and code_at(address,size)==expected,'Tracker CDC query constant changed or writable')
+        for off,opcode,name in ((0x60,b'\xc1\xff','fm1_tracker_fwinfo.prefix'),
+                                (0x74,b'\xc2\xff','fm1_tracker_build_id'),
+                                (0x7a,b'\xc3\xff','fm1_tracker_fwinfo.hex')):
+            require(query[off:off+2]==opcode and struct.unpack_from('<I',query,off+2)[0]==value(name),'Tracker CDC query constant pointer changed')
+            query[off+2:off+6]=b'\0'*4
+        require(calls_to('fm1_tracker_fwinfo','memmove')==[0x6a] and query[0x6a:0x6c]==b'\x80\xff','Tracker CDC query copy call changed')
+        query[0x6a:0x70]=b'\0'*6
+        require(hashlib.sha256(query).hexdigest()=='598141332615df1c6e3e1310b53ed4d175d1de27203ab95d704bc16bb6ce5214','Tracker CDC query read-only instructions changed')
+        require(hashlib.sha256(code_at(value('memmove'),194)).hexdigest()=='7c3346543954e137b7503cc91cd5238d5e6fc5e91861bca749e85e6f9c2ededc','Tracker CDC query memory-copy instructions changed')
+        require(symbols['strncmp'][1]==26 and hashlib.sha256(code_at(value('strncmp'),26)).hexdigest()=='531ed2c20edd5a3e52391f34119b5c3a8f7ec23908ae9e5e387bc2e9ee5184d3','Tracker CDC query prefix-compare instructions changed')
+        # These three connected regions execute before application locks/state:
+        # save arguments/compare, FWINFO helper/error selection, reply/return.
+        command=code_at(value('fm1_mod_usb_command'),0x1dc)
+        require(calls_to('fm1_mod_usb_command','fm1_tracker_fwinfo')==[0xac] and calls_to('fm1_mod_usb_command','strncmp')[0]==0x16,'Tracker CDC query first dispatch changed')
+        dispatch=bytearray(command[:0x1e]+command[0xa4:0xc2]+command[0x1ce:0x1dc])
+        for off,expected in ((0x0e,b'FWINFO\0'),(0x1e+0x10,b'ERR FWINFO\n\0')):
+            pointer=struct.unpack_from('<I',dispatch,off+2)[0]
+            require(dispatch[off:off+2]==b'\xc1\xff' and owner[3]<=pointer and pointer+len(expected)<=owner[3]+owner[5] and code_at(pointer,len(expected))==expected,'Tracker CDC dispatch constant pointer changed')
+            dispatch[off+2:off+6]=b'\0'*4
+        dispatch[0x16:0x1c]=b'\0'*6;dispatch[0x1e+8:0x1e+12]=b'\0'*4
+        require(hashlib.sha256(dispatch).hexdigest()=='4baa40e22955994eeffa126af496204b6722ccb91c8d6eaff56ce48c20d32778','Tracker CDC query first-dispatch instructions changed')
+        tracker_identity={'symbol':'fm1_tracker_build_id','build_id':build_id,'nonce_bytes':16,'read_only':True}
     require(not any(name in symbols for name in ('fm1_tile_test_reference',
             'fm1_reference_background','fm1_reference_sprite')),'Host tile oracle linked into target')
     if 'fm1_volume_start' in symbols:
@@ -177,6 +223,16 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             b'\xc2\xff'+struct.pack('<I',sections['.cache_ram_data'][5]),
             'Cache RAM copy operands changed')
     require(long_call_target(cache+0xf4)==value('memmove'),'Cache RAM copy call changed')
+    if tracker_composite:
+        # CPU-only tracker/UAC/UVC state now occupies cache BSS. Verify the
+        # actual startup zero, including its full current section length.
+        cache_bss=sections['.cache_ram_bss']
+        require(symbols['cache_way_config'][1]==0x110 and
+                code_at(cache+0xfa,14)==b'\xc0\xff'+struct.pack('<I',cache_bss[3])+
+                b'\xc2\xff'+struct.pack('<I',cache_bss[5])+b'\x41\x20' and
+                long_call_target(cache+0x108)==value('memset') and
+                code_at(cache+0x10e,2)==b'\x57\x04',
+                'Tracker cache BSS startup clear changed')
     require(symbols['memory_init'][1]==2 and code_at(value('memory_init'),2)==b'\x80\x00',
             'Reviewed SDK memory hook changed')
     if traced:
@@ -240,6 +296,9 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             # ota_status 0x1c5be50 +380 = trace 0x1c5bfcc; store at
             # 0x200276c is d1 ec 0f 17. Same 46-byte wrapper/22-byte marker.
             if usb_mod:encodings.update({380:'d1 ec 0f 17'})
+            # Composite tracker: the same complete 46-byte wrapper stores its
+            # trace at ota_status+388; only this reviewed writeback is added.
+            if tracker_composite:encodings.update({388:'d1 ec 07 18'})
             # Composite link: ota_status0x1c4db50 +344 = trace0x1c4dca8;
             # reviewed store0x200276c: d1 ec 0b 15. Wrapper otherwise unchanged.
             if usb_audio:encodings.update({344:'d1 ec 0b 15'})
@@ -318,9 +377,9 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
     task_table=value('task_info_table')
     expected_tasks=(('app_core',15,4096,1024),('sys_event',29,512,0),
                     ('systimer',14,256,0),('sys_timer',9,512,128),
-                    (('#C0usb_diag' if factory_diag else 'usb_diag',10,2048,0) if usb_only else ('fm1_nes',10,4096,0)))
+                    (('#C0usb_diag' if factory_diag or tracker_composite else 'usb_diag',10,2048,0) if usb_only else ('fm1_nes',10,4096,0)))
     if usb_midi:expected_tasks=expected_tasks[:4]+(('#C0update',9,2048,0),)+expected_tasks[4:]
-    if usb_peripheral_tests:expected_tasks+=(('#C0peripheral' if factory_diag else 'peripheral',8,4096 if (usb_nes or usb_mdx or usb_mod or factory_diag) else 2048,0),)
+    if usb_peripheral_tests:expected_tasks+=(('#C0peripheral' if factory_diag or tracker_composite else 'peripheral',8,4096 if (usb_nes or usb_mdx or usb_mod or factory_diag) else 2048,0),)
     require(symbols['task_info_table'][1]==20*(len(expected_tasks)+1),
             'SDK/NES task table size changed')
     for i,(name,priority,stack,queue) in enumerate(expected_tasks):
@@ -517,6 +576,156 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             else:
                 for name in ('fm1_uac_desc_config','fm1_usb_audio_dac','fm1_uac_descriptor'):
                     require(name not in symbols,'CDC-only factory links audio class '+name)
+        if tracker_composite:
+            # The tracker uses the same bounded packet/endpoint adapters as the
+            # factory profile, with its own foreground producer and RAM closure.
+            audit_usb_packet(symbols,code_at,composite=usb_audio,video=usb_video,midi=usb_midi)
+            for name in ('tracker_session','tracker_history','block','fm1_peripheral_usb_audio_quiesce'):
+                require(name in symbols,'Missing composite tracker component '+name)
+            require('fm1_tracker_lcd_submit' in symbols and 'fm1_lcd_frames' in symbols,
+                    'Composite tracker requires the reviewed async LCD copy/DMA boundary')
+            require(symbols['fm1_tracker_lcd_submit'][1]==248 and
+                    symbols.get('lcd_async',(0,0,0))[1]==72 and
+                    value('lcd_async')==value('_sdfile_handl')+252,
+                    'Tracker LCD copy/conversion state layout changed')
+            submission=bytearray(code_at(value('fm1_tracker_lcd_submit'),248))
+            for off,name,opcode in ((4,'_sdfile_handl',b'\xc3\xff'),
+                                    (58,'fm1_lcd_frames',b'\xc1\xff'),
+                                    (66,'row_pixels',b'\xc1\xff'),
+                                    (90,'ota_status',b'\xc5\xff'),
+                                    (202,'snapshot.addresses',b'\xc0\xff')):
+                require(submission[off:off+2]==opcode and
+                        struct.unpack_from('<I',submission,off+2)[0]==value(name),
+                        'Tracker LCD copy/conversion pointer changed: '+name)
+                submission[off+2:off+6]=bytes(4)
+            for off,name in ((76,'fm1_lcd_pack_rgb444'),(82,'async_publish_rows'),
+                              (104,'bit_clr_ie'),(192,'unrequest_irq')):
+                require(calls_to('fm1_tracker_lcd_submit',name)==[off] and
+                        call_target(submission[off:off+4],value('fm1_tracker_lcd_submit')+off)==value(name),
+                        'Tracker LCD copy/conversion call changed: '+name)
+                submission[off:off+4]=bytes(4)
+            require(hashlib.sha256(submission).hexdigest()==
+                    '71c2d3c58b2e1ccd113764804a34999abf31c896fa55c581e600dc20ead29e01',
+                    'Tracker LCD copy/conversion instructions changed')
+            for name in ('fm1_forge_task','fm1_forge_video_capture','fm1_forge_audio_output'):
+                require(name not in symbols,'Composite tracker links factory owner '+name)
+            scratch={'block':512,'view':1262,'row_pixels':1440}
+            if usb_audio:scratch['bridge']=8288
+            if usb_video:scratch.update(tracker_capture=2288,fm1_uvc_state=2068,fm1_uvc_control_state=64)
+            for name,expected_size in scratch.items():
+                require(name in symbols,'Missing tracker CPU scratch '+name)
+                address,size,_=symbols[name];cache=sections['.cache_ram_bss']
+                require(size==expected_size and address%4==0 and cache[3]<=address and
+                        address+size<=cache[3]+cache[5],
+                        'Tracker CPU scratch size/cache placement changed: '+name)
+            quiet=calls_to('fm1_usb_rx_irq','fm1_peripheral_usb_audio_quiesce')
+            reboot=calls_to('fm1_usb_rx_irq','go_mask_usb_updata')
+            require(len(quiet)==len(reboot)==1 and quiet[0]<reboot[0],
+                    'Confirmed tracker UBOOT DMA teardown changed')
+            require(not calls_to('fm1_usb_boot_arm','fm1_peripheral_usb_audio_quiesce'),
+                    'UBOOT arm must not prematurely stop tracker peripherals')
+            if usb_video:
+                for name in ('fm1_uvc_setup_init','fm1_uvc_desc_config','fm1_uvc_setup_filter',
+                             'fm1_uvc_capture_stop','fm1_uvc_get_status','fm1_uvc_video_descriptor',
+                             'fm1_uvc_dma','fm1_tracker_capture_step','fm1_tracker_capture_packet'):
+                    require(name in symbols,'Missing tracker UVC component '+name)
+                for name in ('uvc_register','uvc_open','uvc_alloc','uvc_malloc'):
+                    require(name not in symbols,'Tracker UVC must not link stock camera allocation '+name)
+                vc=5 if usb_audio else 2;vs=vc+1
+                def le16(n):return struct.pack('<H',n)
+                def le32(n):return struct.pack('<I',n)
+                expected_video=(bytes((8,11,vc,2,14,3,0,0,9,4,vc,0,0,14,1,0,0,13,36,1))+
+                    le16(0x100)+le16(40)+le32(1000)+bytes((1,vs,18,36,2,1))+le16(0x201)+
+                    bytes((0,0))+le16(0)*3+bytes((3,0,0,0,9,36,3,2))+le16(0x101)+
+                    bytes((0,1,0,9,4,vs,0,0,14,2,0,0,14,36,1,1))+le16(77)+
+                    bytes((0x84,0,2,0,0,0,1,0,27,36,4,1,1))+bytes.fromhex('5955593200001000800000aa00389b71')+
+                    bytes((16,1,0,0,0,0,30,36,5,1,0))+le16(256)+le16(240)+
+                    le32(4915200)*2+le32(122880)+le32(2000000)+bytes((1,))+le32(2000000)+
+                    bytes((6,36,13,4,4,4,9,4,vs,1,1,14,2,0,0,7,5,0x84,1))+le16(642)+bytes((1,)))
+                require(len(expected_video)==159 and symbols['fm1_uvc_video_descriptor'][1]==159 and
+                        code_at(value('fm1_uvc_video_descriptor'),159)==expected_video,
+                        'Tracker UVC descriptor/numbering/mode changed')
+                dma,size,_=symbols['fm1_uvc_dma']
+                require(size==1024 and dma%64==0 and bss[3]<=dma and dma+size<=bss[3]+bss[5],
+                        'Tracker UVC DMA size/alignment/internal-RAM placement changed')
+                init=calls_to('app_task_handler','fm1_uvc_setup_init')
+                starts=calls_to('app_task_handler','task_create')
+                require(len(init)==1 and starts and all(off>init[0] for off in starts),
+                        'Tracker UVC must initialize once before worker/USB attachment')
+                steps=calls_to('fm1_peripheral_task','fm1_tracker_capture_step')
+                lcd=calls_to('fm1_peripheral_task','fm1_tracker_lcd_submit')
+                require(len(steps)==len(lcd)==1 and steps[0]>lcd[0],
+                        'Tracker UVC producer must follow foreground LCD RGB565 copy/conversion')
+                require(len(calls_to('fm1_peripheral_usb_audio_quiesce','fm1_uvc_capture_stop'))==1,
+                        'Tracker UVC confirmed UBOOT permanent teardown changed')
+                require(len(calls_to('usb_device_mode','fm1_uvc_capture_stop'))==1,
+                        'Tracker UVC USB device teardown changed')
+                policy=bytearray(code_at(value('filter'),symbols['filter'][1]))
+                for target in ('fm1_uvc_setup_filter','usb_set_setup_phase'):
+                    hits=calls_to('filter',target)
+                    require(len(hits)==1 and policy[hits[0]]&0xc0==0x80 and policy[hits[0]+1]==0xea,
+                            'Tracker UVC setup policy call changed: '+target)
+                    policy[hits[0]:hits[0]+4]=bytes(4)
+                expected_policy='fd4085e3642bd61688785eae4c92842d384d8f9dbc6d4632d630b4fb449d2ebc' if usb_audio else '07dfa722bdbd843a14c017450425eef7a76fd7537b0e60c54ab38074e200e816'
+                require(hashlib.sha256(policy).hexdigest()==expected_policy,
+                        'Tracker UVC setup policy instructions changed')
+            else:
+                for name in ('fm1_uvc_state','fm1_uvc_dma','fm1_uvc_desc_config','tracker_capture'):
+                    require(name not in symbols,'Non-video tracker links UVC '+name)
+            if usb_audio:
+                for name in ('audio_output','fm1_tracker_speaker_fold','fm1_tracker_analog_gain'):
+                    require(name in symbols,'Missing tracker audio pipeline '+name)
+                mix=calls_to('audio_output','fm1_usb_audio_dac')
+                fold=calls_to('audio_output','fm1_tracker_speaker_fold')
+                gain=calls_to('audio_output','fm1_tracker_analog_gain')
+                require(len(mix)==len(fold)==len(gain)==1 and mix[0]<fold[0]<gain[0],
+                        'Tracker USB stereo capture must precede speaker fold and analog gain')
+                require(symbols['fm1_tracker_speaker_fold'][1]==64 and
+                        hashlib.sha256(code_at(value('fm1_tracker_speaker_fold'),64)).hexdigest()==
+                        '5f7d1de08604d44f70d22c18af525340664289a369ff329aa8e3f8357ca79b6b',
+                        'Tracker bounded 64-bit speaker average instructions changed')
+                # Pin the existing 64-frame startup mute/ramp and all 128
+                # signed Q7 sample operations. Normalize only three pointers
+                # after checking their exact split-envelope symbol ownership.
+                require(symbols['fm1_tracker_analog_gain'][1]==116,
+                        'Tracker analog startup gain size changed')
+                analog=bytearray(code_at(value('fm1_tracker_analog_gain'),116))
+                for name,size in (('envelope.0',4),('envelope.1',1),('envelope.2',1)):
+                    require(name in symbols and symbols[name][1]==size and
+                            bss[3]<=value(name) and value(name)+size<=bss[3]+bss[5],
+                            'Tracker analog startup state layout changed: '+name)
+                require(value('envelope.0')==value('ota_status')+336,
+                        'Tracker analog startup mute state offset changed')
+                for off,name,opcode in ((2,'ota_status',b'\xc3\xff'),
+                                        (12,'envelope.1',b'\xc1\xff'),
+                                        (38,'envelope.2',b'\xc2\xff')):
+                    require(analog[off:off+2]==opcode and
+                            struct.unpack_from('<I',analog,off+2)[0]==value(name),
+                            'Tracker analog startup state pointer changed: '+name)
+                    analog[off+2:off+6]=bytes(4)
+                require(hashlib.sha256(analog).hexdigest()==
+                        'fafed90b01353580f1d0b84a2c818c850d672da2a8cf6afbd61afbbe4a938c58',
+                        'Tracker analog startup gain instructions changed')
+                stop=calls_to('fm1_usb_rx_irq','fm1_usb_audio_stop')
+                require(len(stop)==1 and stop[0]<quiet[0]<reboot[0],
+                        'Confirmed tracker UBOOT audio teardown changed')
+                require(not calls_to('fm1_usb_boot_arm','fm1_usb_audio_stop'),
+                        'UBOOT arm must not prematurely stop tracker USB audio')
+                if usb_midi:
+                    require(symbols['filter'][1]==74,'Tracker MIDI composite setup policy size changed')
+                    policy=bytearray(code_at(value('filter'),74))
+                    require(calls_to('filter','usb_set_setup_phase')==[0x2c] and policy[0x2c:0x2e]==bytes.fromhex('71 87'),
+                            'Tracker MIDI setup stall call changed')
+                    policy[0x2c:0x2e]=bytes(2)
+                    require(hashlib.sha256(policy).hexdigest()=='64efa042da63015bb3abcddaf1a50b96c4a34689703db833a89007747775ea79',
+                            'Tracker MIDI composite setup policy instructions changed')
+                elif not usb_video:
+                    require(symbols['filter'][1]==74 and hashlib.sha256(code_at(value('filter'),74)).hexdigest()==
+                            '8aefdb7c31f5e456688d6564c9d5cf5829ba370ab62d40375a21fa020ecd8078',
+                            'Tracker composite USB setup policy instructions changed')
+            else:
+                for name in ('fm1_uac_desc_config','fm1_usb_audio_dac','fm1_uac_descriptor','bridge'):
+                    require(name not in symbols,'Video-only tracker links audio class '+name)
         require(code_at(value('fm1_usb_device_descriptor'),18)==descriptor,
                 'USB CDC device descriptor changed')
         require(code_at(value('fm1_usb_config_descriptor'),9)==bytes((9,2,0,0,0,1,0,0x80,50)),
@@ -581,8 +790,18 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
                     owner=next(s for s in sections.values() if s[3]<=address and address+size<=s[3]+s[5])
                     require(owner[1]!=8 and not (owner[2]&1),'Demo must be read-only flash')
             if usb_mod:
-                for name in ('fm1_mod_open','fm1_mod_render','fm1_mod_usb_command','fm1_mod_keyscan_isr','song','player'):
+                for name in ('fm1_mod_open','fm1_mod_render','fm1_mod_usb_command','fm1_mod_keyscan_isr','song'):
                     require(name in symbols,'Missing MOD editor '+name)
+                if 'tracker_session' in symbols:
+                    require('tracker_history' in symbols,'Task controller lacks edit history')
+                    address,size,_=symbols['tracker_history'];cache=sections['.cache_ram_bss']
+                    require(size==10320 and cache[3]<=address and
+                            address+size<=cache[3]+cache[5],
+                            'Tracker edit history must fit reviewed CPU-only cache SRAM')
+                    address,size,_=symbols['tracker_session']
+                    require(0<size<=3072 and bss[3]<=address and address+size<=bss[3]+bss[5],
+                            'Tracker controller exceeds reviewed internal-RAM budget')
+                else:require('player' in symbols,'Missing legacy MOD player state')
                 require(any(n=='transfer' or n.startswith('transfer.') for n in symbols),'Missing MOD transfer state')
                 address,size,_=symbols['fm1_mod_keyscan_isr']
                 require(code_at(address+size-2,2)==b'\x81\x00','MOD scanner lacks interrupt return')
@@ -650,6 +869,7 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
                 'ram_source':hex(value('_ram0_data_lma')),'ram_destination':hex(value('_ram0_data_vma')),
                 'ram_bytes':value('_ram0_data_size'),'bss_start':hex(value('_ram0_bss_vma')),
                 'bss_bytes':value('_ram0_bss_size'),'cache_copy_operands_verified':True,
+                'tracker_cache_bss_clear_verified':bool(tracker_composite),
                 'main':hex(value('main'))},
             'early_boot_trace':{'enabled':traced,'address':hex(value('fm1_boot_trace')) if traced else None,
                 'live_debugger_required':True,'survives_reset':False},
@@ -679,8 +899,9 @@ def audit(elf,app,require_peripherals=False,rom='rom50',display_only=False,requi
             'usb_peripheral_tests':usb_peripheral_tests,
             'usb_nes':usb_nes,'usb_mod':usb_mod,'factory_diag':factory_diag,'factory_user_module':factory_user_module,
             'usb_midi_update':usb_midi,'usb_midi_installation_enabled':False,
+            'tracker_cdc_identity':tracker_identity,
             'factory_clock':factory_clock if factory_diag else None,'factory_hal_access':factory_hal_access if factory_diag else None,'usb_audio':usb_audio,'usb_video':usb_video,
-            'usb_video_memory':{n:{'address':hex(value(n)),'bytes':symbols[n][1]} for n in ('fm1_uvc_state','fm1_uvc_control_state','fm1_forge_video_capture','fm1_uvc_dma')} if usb_video else None,
+            'usb_video_memory':{n:{'address':hex(value(n)),'bytes':symbols[n][1]} for n in ('fm1_uvc_state','fm1_uvc_control_state','tracker_capture' if usb_mod else 'fm1_forge_video_capture','fm1_uvc_dma')} if usb_video else None,
             'cartridge':None if display_only or (usb_only and not usb_nes) else rom,'embedded_rom_sha256':None if display_only or (usb_only and not usb_nes) else rom_sha,'hardware_boot_verified':False,'flashable':False}
 
 

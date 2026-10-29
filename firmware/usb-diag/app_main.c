@@ -35,13 +35,13 @@ const struct task_info task_info_table[]={
 #ifdef FM1_USB_MIDI_UPDATE
     {"#C0update",9,2048,0},
 #endif
-#ifdef FM1_FORGE
+#if defined(FM1_FORGE) || defined(FM1_TRACKER_COMPOSITE)
     {"#C0usb_diag",10,2048,0},
 #else
     {"usb_diag",10,2048,0},
 #endif
 #ifdef FM1_PERIPHERAL_TESTS
-#ifdef FM1_FORGE
+#if defined(FM1_FORGE) || defined(FM1_TRACKER_COMPOSITE)
     {"#C0peripheral",8,4096,0},
 #elif defined(FM1_NES_PLAYER) || defined(FM1_MDX_PLAYER) || defined(FM1_MOD_PLAYER)
     {"peripheral",8,4096,0},

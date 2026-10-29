@@ -7,7 +7,7 @@
 #ifdef FM1_USB_AUDIO
 #include "target.h"
 #endif
-#if defined(FM1_USB_AUDIO) || defined(FM1_FORGE)
+#if defined(FM1_USB_AUDIO) || defined(FM1_FORGE) || defined(FM1_USB_VIDEO)
 #include "peripherals.h"
 #endif
 
@@ -40,7 +40,7 @@ void fm1_usb_rx_irq(struct usb_device_t *device) {
 #ifdef FM1_USB_AUDIO
         /* Confirmed entry only: no task/allocation/SDK close in USB IRQ. */
         fm1_usb_audio_stop();fm1_peripheral_usb_audio_quiesce();
-#elif defined(FM1_FORGE)
+#elif defined(FM1_FORGE) || defined(FM1_USB_VIDEO)
         fm1_peripheral_usb_audio_quiesce();
 #endif
         go_mask_usb_updata();

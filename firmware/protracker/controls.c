@@ -26,11 +26,14 @@ fm1_tracker_control_event fm1_tracker_controls_key(fm1_tracker_controls *c,
             c->quick_sample[i]=(uint8_t)current_sample;c->quick_since[i]=now;
             return event(0,0,0);
         }
-        if(slot==11){c->seq_used=0;return event(0,0,0);}
-        if(slot==13 && fm1_tracker_controls_held(c,11)){
-            c->seq_used=1;c->new_pending=1;c->new_fired=0;c->new_since=now;
+        if(slot==11)c->seq_used=0;
+        if(slot==13)c->rec_used=0;
+        if((slot==11 || slot==13) && fm1_tracker_controls_held(c,11) &&
+           fm1_tracker_controls_held(c,13) && !fm1_tracker_controls_held(c,6)){
+            c->seq_used=c->rec_used=1;c->new_pending=1;c->new_fired=0;c->new_since=now;
             return event(0,0,0);
         }
+        if(slot==11 || slot==13)return event(0,0,0);
         if(fm1_tracker_controls_held(c,11))c->seq_used=1;
         return event(FM1_CONTROL_KEY,slot,0);
     }
@@ -53,6 +56,7 @@ fm1_tracker_control_event fm1_tracker_controls_key(fm1_tracker_controls *c,
     if(slot==6)return c->edit_used?event(0,0,0):event(FM1_CONTROL_KEY,6,0);
     if(slot==9)return c->save_used?event(0,0,0):event(FM1_CONTROL_KEY,9,0);
     if(slot==11)return c->seq_used?event(0,0,0):event(FM1_CONTROL_KEY,11,0);
+    if(slot==13)return c->rec_used?event(0,0,0):event(FM1_CONTROL_KEY,13,0);
     return event(0,0,0);
 }
 fm1_tracker_control_event fm1_tracker_controls_tick(fm1_tracker_controls *c,uint32_t now){

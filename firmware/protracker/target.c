@@ -18,8 +18,18 @@
 #include "library.h"
 #include "view.h"
 #include "controls.h"
+#include "session.h"
 #include "bank.h"
 #include "audio_queue.h"
+#include "routing.h"
+#include "build_identity.h"
+#ifdef FM1_USB_AUDIO
+#include "target.h"
+#endif
+#ifdef FM1_USB_VIDEO
+#include "capture.h"
+#include "fm1_uvc.h"
+#endif
 #include <stdio.h>
 #include <string.h>
 
@@ -29,19 +39,21 @@ extern const uint8_t fm1_mod_default_song[];
 extern const uint32_t fm1_mod_default_song_size;
 #endif
 static fm1_mod_transfer transfer;
-static fm1_mod_player player;
-static uint8_t mix_stereo; /* power-on default includes all voices on speaker */
-static fm1_mod_editor editor;
+static fm1_tracker_session tracker_session;
+/* CPU-only edit history is never exposed to endpoint or display DMA. */
+static fm1_mod_history tracker_history __attribute__((section(".memp_memory_x"),aligned(4)));
+#define player tracker_session.player
+#define editor tracker_session.editor
+#define gestures tracker_session.gestures
+#define view_context tracker_session.view_context
+#define current_page tracker_session.page
+#define mix_stereo tracker_session.stereo
 static fm1_mod_library library;
-static fm1_tracker_controls gestures;
-static fm1_tracker_view_context view_context;
 static fm1_bank active_bank;
-static uint32_t notice_until;
 #ifdef FM1_MOD_EMBEDDED_BANK
 extern const uint8_t fm1_mod_active_bank[];
 extern const uint32_t fm1_mod_active_bank_size;
 #endif
-static uint8_t page; /* 0 pattern (with compact bank/arranger), 1 PC files, 2 song samples */
 static fm1_wl82_keyscan scanner;
 static fm1_volume mod_volume;
 static fm1_encoders encoders;
@@ -49,7 +61,16 @@ static fm1_audio_startup envelope;
 static spinlock_t control_lock,audio_lock,input_lock;
 static struct {unsigned request,running,available,executing,shutdown,quiescent,frames,underruns,ui_frames,ui_strips,save_hint;} control;
 #define PCM_RING_FRAMES FM1_PCM_RING_FRAMES
-static int16_t ring[PCM_RING_FRAMES][2],block[FM1_MOD_BLOCK*2];
+static int16_t ring[PCM_RING_FRAMES][2];
+#ifdef FM1_USB_AUDIO
+static int16_t block[FM1_MOD_BLOCK*2] __attribute__((section(".memp_memory_x"),aligned(4)));
+static uint8_t local_stereo;
+#else
+static int16_t block[FM1_MOD_BLOCK*2];
+#endif
+#ifdef FM1_USB_VIDEO
+static fm1_tracker_capture tracker_capture __attribute__((section(".memp_memory_x"),aligned(4)));
+#endif
 static uint32_t rd,wr,rd_slot,wr_slot,frames,underruns;
 static unsigned primed,audio_enabled,scan_enabled,scan_ticks,input_irq_registered,scan_retries;
 static uint32_t scan_retry_at,encoder_sequence;
@@ -58,11 +79,23 @@ static uint32_t scan_retry_at,encoder_sequence;
 #else
 #define UI_STRIP_ROWS 8u
 #endif
+#if defined(FM1_TRACKER_COMPOSITE) && defined(FM1_LCD_ASYNC)
+/* Async display_rows copies/converts these CPU rows into its separately owned
+ * ordinary-SRAM wire frame before any SPI DMA submission. */
+static uint8_t row_pixels[UI_STRIP_ROWS*480u] __attribute__((section(".memp_memory_x"),aligned(4)));
+#else
 static uint8_t row_pixels[UI_STRIP_ROWS*480u];
+#endif
 static volatile int lcd_error,key_error,audio_error;
 static int scan_timer;
 static void flush_audio(void);
 static void notice(const char *text);
+static void session_flush(void *context){(void)context;flush_audio();}
+/* Keep the capture -> local routing -> analog envelope boundary explicit in
+ * the linked firmware so the emitted-order audit checks the actual callback. */
+__attribute__((noinline,used)) void fm1_tracker_analog_gain(int32_t *out){
+    fm1_audio_startup_process24(&envelope,out);
+}
 
 static unsigned take(spinlock_t *l){unsigned f;local_irq_save(f);arch_spin_lock(l);return f;}
 static void release(spinlock_t *l,unsigned f){arch_spin_unlock(l);local_irq_restore(f);}
@@ -81,6 +114,12 @@ static void status(void *u,char *out,size_t n){
         control.frames,control.underruns,control.ui_frames,control.ui_strips);
 }
 int fm1_mod_usb_command(const char *s,uint32_t now,fm1_mod_reply reply,void *ctx){
+    if(!strncmp(s,"FWINFO",6)){
+        char line[FM1_TRACKER_FWINFO_RESPONSE_BYTES];
+        if(fm1_tracker_fwinfo(s,line,sizeof(line)))reply(ctx,line);
+        else reply(ctx,"ERR FWINFO\n");
+        return 1;
+    }
     fm1_mod_usb_io io={0,idle,request,status};unsigned f,was_loaded;int rc;
     if(!strcmp(s,"MOD KEY")){
         char line[192];fm1_wl82_keyscan_failure failure;
@@ -113,13 +152,19 @@ int fm1_mod_usb_command(const char *s,uint32_t now,fm1_mod_reply reply,void *ctx
         release(&control_lock,f);crc=fm1_mod_crc32(song.bytes,length);
         f=take(&control_lock);transfer.export_crc=crc;transfer.export_length=length;
     }
+    if(control.executing){release(&control_lock,f);reply(ctx,"ERR MOD BUSY\n");return 1;}
+    /* Large MOD transfers can take longer than the library's offline timeout.
+     * Their protocol traffic proves the PC is still servicing this request. */
+    if(!strcmp(s,"LIB POLL") || (library.pending && !strncmp(s,"MOD ",4)))library.last_ms=now;
     rc=fm1_mod_library_line(&library,s,reply,ctx);
     if(!rc)rc=fm1_mod_usb_line(&song,&transfer,&io,s,now,reply,ctx);
     if(was_loaded && !song.loaded && transfer.active){fm1_mod_preview_stop(&player);flush_audio();}
     if(!was_loaded && song.loaded){
-        fm1_mod_editor_init(&editor,&song);editor.octave=-1;editor.edit=0;control.save_hint=0;page=0;
-        memset(&view_context,0,sizeof(view_context));fm1_tracker_controls_init(&gestures);notice("MOD LOADED");
+        fm1_tracker_session_reset_after_load(&tracker_session,now);control.save_hint=0;
+        notice("MOD LOADED");
     }
+    if(!strncmp(s,"MOD SAVED ",10) && !transfer.exporting && !song.dirty)
+        fm1_mod_history_mark_saved(&tracker_history);
     release(&control_lock,f);return rc;
 }
 void fm1_mod_usb_reset(void){unsigned f=take(&control_lock);fm1_mod_usb_abort(&transfer);release(&control_lock,f);}
@@ -146,8 +191,14 @@ static void audio_output(void *ctx,u8 *data,int len,u8 ch){
             if(primed && (control.running || player.preview_active))underruns++;}
     }
     if(primed && wr==rd)primed=0;
+#ifdef FM1_USB_AUDIO
+    /* Capture original tracker stereo before speaker fold and analog gain.
+     * The shared bounded bridge also permits optional PC audio monitoring. */
+    fm1_usb_audio_dac(out,64);
+    fm1_tracker_speaker_fold(out,64,local_stereo);
+#endif
     {unsigned f=take(&input_lock);envelope.target_q7=mod_volume.valid?mod_volume.target:0;release(&input_lock,f);}
-    fm1_audio_startup_process24(&envelope,out);frames+=64;
+    fm1_tracker_analog_gain(out);frames+=64;
 }
 ___interrupt static void fm1_test_alink_isr(void){unsigned f=take(&audio_lock);if(audio_enabled)iis_irq_handler(0);release(&audio_lock,f);}
 ___interrupt static void fm1_mod_keyscan_isr(void){unsigned f=take(&input_lock);if(scan_enabled)fm1_wl82_keyscan_async_step(&scanner);release(&input_lock,f);}
@@ -163,35 +214,59 @@ static void fm1_mod_scan_tick(void *u){unsigned f=take(&input_lock);(void)u;
 static void publish(void){unsigned f,fr,ur;f=take(&audio_lock);fr=frames;ur=underruns;release(&audio_lock,f);
     f=take(&control_lock);control.frames=fr;control.underruns=ur;release(&control_lock,f);}
 static void flush_audio(void){unsigned f=take(&audio_lock);rd=wr=rd_slot=wr_slot=0;primed=0;release(&audio_lock,f);}
-static void stop(void){unsigned f;flush_audio();
-    if(player.playing)fm1_mod_editor_sync_player(&editor,&player);
-    fm1_mod_player_stop(&player);editor.edit=0;
-    f=take(&control_lock);control.running=0;release(&control_lock,f);}
+static void stop(void){unsigned f;
+    fm1_tracker_session_stop(&tracker_session);
+    f=take(&control_lock);control.running=tracker_session.running;release(&control_lock,f);
+}
 static void shutdown(void){unsigned f;stop();if(scan_timer>0)sys_usec_timer_del(scan_timer);
     bit_clr_ie(IRQ_SPI2_IDX,0);f=take(&input_lock);scan_enabled=0;
     if(scanner.running)fm1_wl82_keyscan_stop(&scanner);fm1_volume_stop(&mod_volume);release(&input_lock,f);
     if(input_irq_registered)unrequest_irq(IRQ_SPI2_IDX,0);
     bit_clr_ie(IRQ_ALNK_IDX,0);f=take(&audio_lock);audio_enabled=0;release(&audio_lock,f);
-    unrequest_irq(IRQ_ALNK_IDX,0);iis_channel_off(8,0);iis_close(0);fm1_display_test_stop();
+    unrequest_irq(IRQ_ALNK_IDX,0);iis_channel_off(8,0);iis_close(0);
+#ifdef FM1_USB_AUDIO
+    fm1_usb_audio_stop();
+#endif
+#ifdef FM1_USB_VIDEO
+    fm1_uvc_capture_stop();
+#endif
+    fm1_display_test_stop();
     f=take(&control_lock);control.available=0;control.quiescent=1;release(&control_lock,f);
     for(;;)os_time_dly(100);
 }
-static void action(unsigned op){
-    if(op==FM1_MOD_REQUEST_STOP){stop();return;}
-    if(op==FM1_MOD_REQUEST_NEW){stop();fm1_mod_new(&song);song.dirty=1;fm1_mod_editor_init(&editor,&song);editor.octave=-1;editor.edit=0;
-        page=0;memset(&view_context,0,sizeof(view_context));notice("NEW EMPTY SONG");return;}
-    if((op==FM1_MOD_REQUEST_PLAY || op==FM1_MOD_REQUEST_PATTERN) && song.loaded){
-        unsigned f;int rc;flush_audio();
-        rc=op==FM1_MOD_REQUEST_PATTERN?
-            fm1_mod_player_start_pattern_at(&player,&song,editor.order,0):
-            fm1_mod_player_start_at(&player,&song,editor.order,0);
-        if(rc)return;
-        page=0;view_context.arranger=view_context.bank_open=0;
-        player.stereo=mix_stereo;editor.edit=0;
-        f=take(&control_lock);control.running=1;release(&control_lock,f);
-    }
+static void action(unsigned op){unsigned f;
+    fm1_tracker_session_action(&tracker_session,op,timer_get_ms());
+    f=take(&control_lock);control.running=tracker_session.running;release(&control_lock,f);
 }
+#ifdef FM1_TRACKER_COMPOSITE
+static fm1_tracker_view view __attribute__((section(".memp_memory_x"),aligned(4)));
+#else
 static fm1_tracker_view view;
+#endif
+#ifdef FM1_USB_VIDEO
+/* Only task code renders/converts; short IRQ guards authenticate packet leases. */
+__attribute__((noinline,used)) void fm1_tracker_capture_step(uint32_t now){
+    fm1_uvc_write write;fm1_uvc_stream *stream;unsigned flags;int rc;
+    if(transfer.active || transfer.exporting || control.shutdown)return;
+    local_irq_save(flags);stream=fm1_uvc_stream_get();
+    rc=fm1_uvc_reserve_bytes(stream,now,&write);local_irq_restore(flags);
+    if(rc!=FM1_UVC_OK)return;
+    if(!write.first_byte)fm1_tracker_capture_accept(&tracker_capture,&view);
+    rc=fm1_tracker_capture_packet(&tracker_capture,&write);
+    local_irq_save(flags);
+    if(rc==FM1_UVC_OK)fm1_uvc_publish_bytes(stream,now,&write);
+    else fm1_uvc_cancel_bytes(stream,now,&write);
+    local_irq_restore(flags);
+}
+#endif
+#if defined(FM1_USB_AUDIO) || defined(FM1_USB_VIDEO)
+/* Called only after the foreground task has stopped IIS/scanning for UBOOT. */
+__attribute__((noinline,used)) void fm1_peripheral_usb_audio_quiesce(void){
+#ifdef FM1_USB_VIDEO
+    fm1_uvc_capture_stop();
+#endif
+}
+#endif
 #ifndef FM1_LCD_ASYNC
 static fm1_tracker_view previous_view;
 static uint32_t dirty_strips;
@@ -201,12 +276,11 @@ static void ui_text(void){
     unsigned f=take(&control_lock),busy=transfer.active,loaded=song.loaded;
     release(&control_lock,f);
     if(!busy)
-    fm1_tracker_view_update(&view,&song,&player,&editor,&library,page,
+    fm1_tracker_view_update(&view,&song,&player,&editor,&library,current_page,
         control.running,mix_stereo,control.save_hint);
     view_context.quick_modifier=(uint8_t)fm1_tracker_controls_held(&gestures,6);
     view_context.block_modifier=(uint8_t)fm1_tracker_controls_held(&gestures,11);
     view_context.new_hold=(uint8_t)(gestures.new_pending && !gestures.new_fired);
-    if(view_context.notice[0] && (int32_t)(timer_get_ms()-notice_until)>=0)view_context.notice[0]=0;
     if(!busy)fm1_tracker_view_context_apply(&view,&song,&editor,&view_context);
     f=take(&control_lock);busy|=transfer.active || loaded!=song.loaded;
     release(&control_lock,f);
@@ -223,7 +297,7 @@ static void ui_refresh(void){
 static void render_strip(unsigned y){
 #ifdef FM1_LCD_ASYNC
     unsigned local=y>=80?(y-80)%16:0;
-    if(y>=80 && local>=2 && local<=14 && !(local&1)){
+    if(!view.page && y>=80 && local>=2 && local<=14 && !(local&1)){
         /* The first row of this strip repeats the last row of the previous
          * strip. The frame snapshot stays fixed until all rows are submitted. */
         memcpy(row_pixels,row_pixels+(UI_STRIP_ROWS-1u)*480u,480u);
@@ -233,6 +307,13 @@ static void render_strip(unsigned y){
 #endif
     fm1_tracker_view_render(&view,y,UI_STRIP_ROWS,row_pixels);
 }
+#ifdef FM1_LCD_ASYNC
+/* Preserve an emitted ownership boundary: rows are converted/copied into the
+ * display's normal-SRAM wire frame before the screen-capture producer runs. */
+__attribute__((noinline,used)) int fm1_tracker_lcd_submit(unsigned y){
+    return fm1_display_async_rows(y,UI_STRIP_ROWS,row_pixels);
+}
+#endif
 #ifndef FM1_LCD_ASYNC
 static int ui_strip(unsigned y){
     uint8_t col[4]={0,0,0,239},rows[4],cmd;unsigned end=y+7;
@@ -246,164 +327,39 @@ static int ui_strip(unsigned y){
 }
 #endif
 static void notice(const char *text){
-    snprintf(view_context.notice,sizeof(view_context.notice),"%.39s",text);
-    notice_until=timer_get_ms()+1200u;
+    fm1_tracker_session_notice(&tracker_session,text,timer_get_ms());
 }
-static void sample_notice(const char *prefix,unsigned quick){
-    char text[40];unsigned h=20u+(editor.sample-1u)*30u;
-    if(quick<8)snprintf(text,sizeof(text),"Q%u %s S%02X %.16s",quick+1,prefix,
-        editor.sample,(const char *)song.bytes+h);
-    else snprintf(text,sizeof(text),"S%02X %.19s",editor.sample,(const char *)song.bytes+h);
-    notice(text);
-}
-static int bank_audition(unsigned midi){
-    fm1_bank_entry entry;
-    if(fm1_bank_entry_get(&active_bank,view_context.bank_index,&entry))return -1;
-    snprintf(view_context.bank_name,sizeof(view_context.bank_name),"%.19s",entry.name);
-    if(!control.running)flush_audio();
-    return fm1_mod_preview_pcm(&player,entry.pcm,entry.length,entry.volume,
-        (unsigned)entry.finetune&15u,entry.loop_start,entry.loop_length,midi,editor.channel);
-}
-static int editable(void){return song.loaded && !control.running && !transfer.active && !transfer.exporting;}
-static void input_key(unsigned slot){
-    unsigned f=take(&control_lock);int rc=0;
-    if(transfer.active || transfer.exporting){release(&control_lock,f);return;}
-    if(slot==6){
-        release(&control_lock,f);stop();page=0;view_context.arranger=view_context.bank_open=0;
-        notice("EDIT / AUDITION");return;
+/* The controller is task-owned. This gate prevents the USB task from replacing
+ * its document during an edit while audio and scanner IRQs keep running. */
+static int session_begin(void){unsigned f=take(&control_lock);
+    if(transfer.active || transfer.exporting || control.request || control.shutdown){
+        release(&control_lock,f);return 0;
     }
-    if(page==1){
-        if(slot==8 || slot==9)page=0;
-        else if(slot==12)fm1_mod_library_pick(&library);
+    control.executing=1;tracker_session.busy=0;release(&control_lock,f);return 1;
+}
+static void session_end(void){unsigned f=take(&control_lock);
+    control.running=tracker_session.running;control.executing=0;
+    release(&control_lock,f);
+#ifdef FM1_USB_AUDIO
+    f=take(&audio_lock);local_stereo=mix_stereo;release(&audio_lock,f);
+#endif
+}
+static void session_key(unsigned slot,unsigned down,uint32_t now){
+    unsigned f=take(&control_lock);
+    if(transfer.active || transfer.exporting || control.request || control.shutdown){
+        /* Consume releases even when editing is frozen. Otherwise a modifier
+         * released during a USB transfer would remain held after thawing. */
+        tracker_session.busy=1;
+        fm1_tracker_session_key(&tracker_session,slot,down,now);
         release(&control_lock,f);return;
     }
-    if(page==2){
-        if(slot==8 || slot==4 || slot==12)page=0;
-        release(&control_lock,f);return;
-    }
-    if(slot==12 || slot==7){
-        page=0;view_context.arranger=view_context.bank_open=0;
-        if(!control.request)request(0,control.running?FM1_MOD_REQUEST_STOP:
-            slot==7?FM1_MOD_REQUEST_PATTERN:FM1_MOD_REQUEST_PLAY);
-    }else if(slot==13){
-        if(control.running)notice("STOP FIRST TO WRITE");
-        else {editor.edit^=1;notice(editor.edit?"WRITE NOTE ENTRY":"EDIT / AUDITION");}
-    }else if(slot==9){page=1;view_context.arranger=view_context.bank_open=0;}
-    else if(slot==8){
-        if(control.running)notice("STOP FIRST FOR ORDER EDIT");
-        else {view_context.bank_open=0;view_context.arranger^=1;notice("HOME ORDER / PATTERN");}
-    }else if(slot==0 || slot==1){
-        if(slot==0 && editor.octave>-2)editor.octave--;
-        if(slot==1 && editor.octave<1)editor.octave++;
-    }else if(view_context.bank_open){
-        if(slot==4){view_context.bank_open=0;fm1_mod_preview_stop(&player);if(!control.running)flush_audio();}
-        else if(slot==2){
-            if(!editable())notice("STOP FIRST TO COPY BANK");
-            else {
-                /* Copy/memmove up to 256 KiB with IRQs enabled. The USB idle
-                 * gate excludes replacement of the RAM song during this edit. */
-                control.executing=1;fm1_mod_preview_stop(&player);flush_audio();release(&control_lock,f);
-                rc=fm1_bank_import(&active_bank,view_context.bank_index,&song,editor.sample);
-                f=take(&control_lock);control.executing=0;
-                if(rc)notice("BANK COPY FULL / ERROR");
-                else {view_context.bank_open=0;sample_notice("COPIED",8);}
-            }
-        }
-    }else if(view_context.arranger){
-        if(!editable())notice("STOP FIRST FOR ORDER EDIT");
-        else {
-            unsigned pattern=(unsigned)fm1_mod_get_order(&song,editor.order);
-            if(slot==2){rc=fm1_mod_append_order(&song,pattern);if(!rc)editor.order=(uint8_t)(song.orders-1);}
-            else if(slot==4)rc=fm1_mod_insert_order(&song,editor.order,pattern);
-            else if(slot==3){rc=fm1_mod_delete_order(&song,editor.order);if(editor.order>=song.orders)editor.order=(uint8_t)(song.orders-1);}
-            else if(slot==5){rc=fm1_mod_duplicate_order(&song,editor.order);if(!rc)editor.order++;}
-            else if(slot==10 || slot==11){
-                int added;control.executing=1;fm1_mod_preview_stop(&player);flush_audio();release(&control_lock,f);
-                added=slot==10?fm1_mod_add_pattern(&song):fm1_mod_duplicate_pattern(&song,pattern);
-                rc=added<0?-1:fm1_mod_set_order(&song,editor.order,(unsigned)added);
-                f=take(&control_lock);control.executing=0;
-            }
-            if(slot==2 || slot==3 || slot==4 || slot==5 || slot==10 || slot==11){
-                if(!rc)fm1_mod_editor_block_clear(&editor);
-                notice(rc?"ORDER/PATTERN FULL / ERROR":slot==10?"NEW BLANK PATTERN":slot==11?"DUPLICATED PATTERN":"ORDER UPDATED");
-            }
-        }
-    }else if((slot==3 || slot==5) && fm1_tracker_controls_held(&gestures,11)){
-        fm1_tracker_controls_use_seq(&gestures);
-        if(!editable())notice("STOP FIRST FOR BLOCK EDIT");
-        else {rc=slot==3?fm1_mod_editor_block_copy(&editor):fm1_mod_editor_block_paste(&editor);
-            notice(rc?"NO BLOCK / CLIPBOARD":slot==3?"BLOCK COPIED":"BLOCK PASTED");}
-    }else if(slot==3 || slot==5){
-        if(!editable())notice("STOP FIRST TO DELETE");
-        else {if(slot==3)fm1_mod_editor_clear_field(&editor);else fm1_mod_editor_clear_all(&editor);
-            notice(slot==3?"FIELD CLEARED":"CELL CLEARED");}
-    }else if(slot==4){
-        if(!active_bank.count)notice("ACTIVE BANK UNAVAILABLE");
-        else {view_context.bank_open=1;view_context.bank_count=active_bank.count;bank_audition(48);}
-    }else if(slot==2){fm1_mod_editor_field_move(&editor,1);}
-    else if(slot==11){fm1_mod_editor_block_clear(&editor);notice("BLOCK CLEARED");}
-    if(slot>=14 && slot<41 && song.loaded){
-        int midi=53+(int)slot-14+(int)editor.octave*12;
-        if(midi>=36 && midi<=71){
-            if(view_context.bank_open)bank_audition((unsigned)midi);
-            else {
-                if(!control.running)flush_audio();
-                fm1_mod_preview_start(&player,&song,editor.sample,(unsigned)midi,editor.channel);
-                if(editor.edit && !control.running)fm1_mod_editor_note(&editor,(unsigned)midi);
-            }
-        }
-    }
     release(&control_lock,f);
-}
-static void control_event(fm1_tracker_control_event event){
-    unsigned f;
-    if(event.kind==FM1_CONTROL_KEY){input_key(event.index);return;}
-    if(!event.kind)return;
-    f=take(&control_lock);
-    if(transfer.active || transfer.exporting || !song.loaded){release(&control_lock,f);return;}
-    if(event.kind==FM1_CONTROL_NEW_SONG){
-        if(control.running)notice("STOP FIRST FOR NEW SONG");
-        else if(!control.request){request(0,FM1_MOD_REQUEST_NEW);notice("NEW EMPTY SONG");}
-    }else if(event.kind==FM1_CONTROL_QUICK_BIND){
-        /* Bind captured PRESETS selection, even when it changed during hold. */
-        unsigned current=editor.sample;char text[40];unsigned h=20u+(event.sample-1u)*30u;
-        editor.sample=event.sample;fm1_mod_editor_quick_bind(&editor,event.index);editor.sample=(uint8_t)current;
-        snprintf(text,sizeof(text),"Q%u BOUND S%02X %.16s",event.index+1,event.sample,(const char *)song.bytes+h);notice(text);
-    }else if(event.kind==FM1_CONTROL_QUICK_SELECT){
-        fm1_mod_editor_quick_select(&editor,event.index);view_context.bank_open=view_context.arranger=0;
-        sample_notice("SELECT",event.index);
-    }
-    release(&control_lock,f);
+    if(!session_begin())return;
+    fm1_tracker_session_key(&tracker_session,slot,down,now);session_end();
 }
 static void input_encoder(unsigned id,int step){
-    unsigned f=take(&control_lock);int rc=0;
-    control.save_hint=0;
-    if(transfer.active || transfer.exporting || !song.loaded){release(&control_lock,f);return;}
-    if(fm1_tracker_controls_held(&gestures,9) && id==4){
-        fm1_tracker_controls_use_save(&gestures);mix_stereo=(uint8_t)(step>0);player.stereo=mix_stereo;
-        notice(mix_stereo?"STEREO AUDIO OUT":"MONO ALL TRACKS SPEAKER");
-        release(&control_lock,f);return;
-    }
-    if(page==1){if(id==0 || id==2)fm1_mod_library_move(&library,step);release(&control_lock,f);return;}
-    if(page==2){if(id==0 || id==2 || id==6)fm1_tracker_controls_encoder(&gestures,&editor,0,6,step);
-        release(&control_lock,f);return;}
-    if(view_context.bank_open && id==2){
-        int index=(int)view_context.bank_index+step;
-        if(index<0)index=0;if(index>=active_bank.count)index=active_bank.count-1;
-        view_context.bank_index=(uint16_t)index;bank_audition(48);
-    }else if(view_context.arranger && id==4){
-        if(!control.running){int pattern=fm1_mod_get_order(&song,editor.order)+step;
-            if(pattern<0)pattern=0;if(pattern>=song.patterns)pattern=song.patterns-1;
-            rc=fm1_mod_set_order(&song,editor.order,(unsigned)pattern);
-            if(!rc)fm1_mod_editor_block_clear(&editor);
-            notice(rc?"PATTERN NOT AVAILABLE":"ORDER PATTERN ASSIGNED");}
-    }else {
-        rc=fm1_tracker_controls_encoder(&gestures,&editor,control.running,id,step);
-        if(id==6)sample_notice("",8);
-        else if(id==5 && editor.field!=FM1_FIELD_PARAM){char text[40];snprintf(text,sizeof(text),"ENTRY STEP %02u",editor.step);notice(text);}
-        else if(rc)notice("FIELD VALUE UNAVAILABLE");
-    }
-    release(&control_lock,f);
+    if(!session_begin())return;
+    fm1_tracker_session_encoder(&tracker_session,id,step,timer_get_ms());session_end();
 }
 __attribute__((noinline,used)) static void fm1_peripheral_task(void *u){
     struct iis_platform_data pd;unsigned f;uint32_t last_ui=0,last_status=0,changed=0;
@@ -418,18 +374,11 @@ __attribute__((noinline,used)) static void fm1_peripheral_task(void *u){
         if(fm1_mod_open(&song,fm1_mod_default_song_size))fm1_mod_new(&song);
     }
 #endif
-    fm1_mod_editor_init(&editor,&song);editor.octave=-1;editor.edit=0;
-#ifdef FM1_MOD_EMBEDDED_DEFAULT
-    if(!memcmp(song.bytes,"FM1 ORIGINAL BREAK",18)){
-        static const uint8_t starter_quick[8]={1,3,6,7,17,20,13,27};
-        memcpy(editor.quick,starter_quick,sizeof(starter_quick));
-    }
-#endif
-    fm1_tracker_controls_init(&gestures);
 #ifdef FM1_MOD_EMBEDDED_BANK
     fm1_bank_load(&active_bank,fm1_mod_active_bank,fm1_mod_active_bank_size);
 #endif
-    view_context.bank_count=active_bank.count;
+    fm1_tracker_session_init(&tracker_session,&song,&library,&active_bank,
+        &tracker_history,session_flush,0);
     lcd_error=fm1_display_test_init();
 #ifdef FM1_LCD_ASYNC
     if(!lcd_error)lcd_error=fm1_display_async_start();
@@ -453,7 +402,15 @@ __attribute__((noinline,used)) static void fm1_peripheral_task(void *u){
         if(op){action(op);f=take(&control_lock);control.executing=0;running=control.running;release(&control_lock,f);}
         f=take(&audio_lock);queued=wr-rd;release(&audio_lock,f);
         if((running || player.preview_active) && song.loaded && !audio_error && queued<=PCM_RING_FRAMES-FM1_MOD_BLOCK){
-            unsigned i;fm1_mod_render(&player,block,FM1_MOD_BLOCK);
+            unsigned i;
+#ifdef FM1_USB_AUDIO
+            /* Session/playback are task-owned. The queued PCM keeps its
+             * original panning; the DAC callback applies the local SPK mode. */
+            unsigned stereo=player.stereo;player.stereo=1;
+            fm1_mod_render(&player,block,FM1_MOD_BLOCK);player.stereo=(uint8_t)stereo;
+#else
+            fm1_mod_render(&player,block,FM1_MOD_BLOCK);
+#endif
             f=take(&audio_lock);for(i=0;i<FM1_MOD_BLOCK;i++){
                 ring[wr_slot][0]=block[2*i];ring[wr_slot][1]=block[2*i+1];wr++;
                 wr_slot=fm1_pcm_next_slot(wr_slot);}release(&audio_lock,f);
@@ -482,21 +439,23 @@ __attribute__((noinline,used)) static void fm1_peripheral_task(void *u){
                 down=candidate&~stable;up=stable&~candidate;stable=candidate;
                 /* Modifier presses precede shortcut presses in one scan;
                  * releases preserve the pending chord even if EDIT rises first. */
-                if((down>>6)&1u)control_event(fm1_tracker_controls_key(&gestures,6,1,now,editor.sample));
-                if((down>>9)&1u)control_event(fm1_tracker_controls_key(&gestures,9,1,now,editor.sample));
-                if((down>>11)&1u)control_event(fm1_tracker_controls_key(&gestures,11,1,now,editor.sample));
+                if((down>>6)&1u)session_key(6,1,now);
+                if((down>>9)&1u)session_key(9,1,now);
+                if((down>>11)&1u)session_key(11,1,now);
                 for(i=0;i<41;i++)if(i!=6 && i!=9 && i!=11 && ((down>>i)&1u))
-                    control_event(fm1_tracker_controls_key(&gestures,i,1,now,editor.sample));
+                    session_key(i,1,now);
                 for(i=0;i<41;i++)if((up>>i)&1u)
-                    control_event(fm1_tracker_controls_key(&gestures,i,0,now,editor.sample));
+                    session_key(i,0,now);
             }
         } else if(scan_rc!=FM1_NES_BUSY && scan_enabled){
             key_error=scan_rc;scan_retry_at=now;bit_clr_ie(IRQ_SPI2_IDX,0);
             f=take(&input_lock);scan_enabled=0;fm1_wl82_keyscan_stop(&scanner);release(&input_lock,f);
             if(input_irq_registered){unrequest_irq(IRQ_SPI2_IDX,0);input_irq_registered=0;}
         }
-        for(;;){fm1_tracker_control_event event=fm1_tracker_controls_tick(&gestures,now);
-            if(!event.kind)break;control_event(event);}
+        if(session_begin()){
+            fm1_tracker_session_tick(&tracker_session,now);session_end();
+        }
+        running=control.running;
         if(scan_enabled)for(i=0;i<7;i++){
             int steps=fm1_encoder_detents(counts[i],&prior[i],&accum[i]);
             while(steps>0){input_encoder(i,1);steps--;}
@@ -521,7 +480,7 @@ __attribute__((noinline,used)) static void fm1_peripheral_task(void *u){
             }
             if(!lcd_error && screen_row<240){
                 render_strip(screen_row);
-                lcd_error=fm1_display_async_rows(screen_row,UI_STRIP_ROWS,row_pixels);
+                lcd_error=fm1_tracker_lcd_submit(screen_row);
                 screen_row+=UI_STRIP_ROWS;
                 f=take(&control_lock);control.ui_strips++;
                 if(screen_row==240)control.ui_frames++;
@@ -540,6 +499,10 @@ __attribute__((noinline,used)) static void fm1_peripheral_task(void *u){
             }
 #endif
         }
+#ifdef FM1_USB_VIDEO
+        /* Complete foreground LCD work before bounded USB screen strips. */
+        if(!running || queued>=1470u)fm1_tracker_capture_step(now);
+#endif
         wdt_clear();
 #ifdef FM1_LCD_ASYNC
         /* The NES 30 fps path yields without a 10 ms sleep. That also keeps

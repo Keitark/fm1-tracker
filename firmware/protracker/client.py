@@ -28,7 +28,7 @@ def expected_reply(command, answer):
     if command.startswith('MOD DATA '):
         return answer.startswith('OK MOD DATA ')
     if command == 'LIB POLL':
-        return answer == 'LIB IDLE' or answer.startswith('LIB PICK ')
+        return answer == 'LIB IDLE' or answer.startswith(('LIB PICK ', 'LIB SAVE '))
     if command.startswith('LIB ADD '):
         return answer == 'OK LIB ADD'
     if command.startswith('LIB DONE '):

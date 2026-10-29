@@ -6,30 +6,31 @@ It edits ordinary self-contained 31-sample, four-channel `M.K.` / `M!K!` MODs
 in a 256 KiB RAM song buffer. The ProTracker 3.15 comparison is recorded in
 [PROTRACKER315_WORKFLOW.md](PROTRACKER315_WORKFLOW.md).
 
-## Status
+## Status — 2026-10-29
 
-The source implements [Issue #2](https://github.com/Keitark/fm1-tracker/issues/2)
-and [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md): explicit field editing,
-quick samples, rectangular block copy/paste, order arranging, an Active Bank,
-an original tutorial and empty NEW SONG. Build/test evidence and the physical
-acceptance checklist are in [MILESTONE_2.md](MILESTONE_2.md).
+[Issue #20](https://github.com/Keitark/fm1-tracker/issues/20) extends the
+[Milestone #2](MILESTONE_2.md) editor with eight-level undo/redo, sample metadata
+editing, block cut/fill/transpose, row operations, mute/solo, confirmations,
+contextual help, PC save requests and an interactive graphical workshop.
+[WORKFLOW_20.md](WORKFLOW_20.md) is the operating guide and first-song tutorial.
 
-**Installed hardware is v32**, flashed on 2026-10-05 JST: the v31 editor with
-State of the Art as its embedded boot song, retaining the original 29-sound bank.
-Its 119-sector/full-image verification, CDC boot and exact loaded-MOD CRC passed.
-[Deployment evidence](../../docs/MOD_STOA_DEFAULT_V32_DEPLOYMENT.md) records these checks.
-The [v31 live check](../../docs/MOD_FAST_EDITOR_BANK_V31_DEPLOYMENT.md) measured
-approximately 25 UI counter updates/second. Physical knobs, visual response and audible outputs remain on
-the acceptance checklist. The encoder capture/backlog correction is retained.
-Historical evidence remains in the [v30 deployment](../../docs/MOD_VIEW_KNOBS_V30_DEPLOYMENT.md)
-and [v29 profile](profiles/knob-fix-v29/README.md).
+The portable controller, renderer and host regression scenarios are implemented
+and tested. The Workflow #20 candidate has not been flashed or physically
+accepted. Host checks do not establish current device installation, physical
+knob feel, LCD frame rate, DAC output or optional USB audio/video acceptance.
+Target build/package results and deliberate hardware validation are recorded
+in the [Workflow 20 build record](../../docs/TRACKER_WORKFLOW20_20261029.md).
+Older [v32](../../docs/MOD_STOA_DEFAULT_V32_DEPLOYMENT.md),
+[v31](../../docs/MOD_FAST_EDITOR_BANK_V31_DEPLOYMENT.md) and
+[v30](../../docs/MOD_VIEW_KNOBS_V30_DEPLOYMENT.md) reports are historical evidence.
 
 ## Pattern workflow
 
 All four tracks, four scopes and nine pattern rows stay visible. The active row
 is fixed at the center; rows move upwards during playback. The selected field
 has its own highlight, blocks are shaded, and short notices report actions.
-HOME and ENV add compact contextual controls above the grid.
+HOME and ENV add compact contextual controls above the grid. ARP opens a
+dedicated sample inspector; help and confirmation overlays retain the grid.
 The preview uses `view.c` and LCD RGB444 truncation; it is not a device photo.
 
 ![Offline tracker workflow preview](preview/fm1-tracker-screens.png)
@@ -57,7 +58,13 @@ Orders, patterns, rows and steps are decimal; sample slots and effects are hex.
 | OCT− / OCT+ | Keyboard octave, bounded −2..+1 |
 | HOME | Toggle compact order arranger |
 | ENV | Open/close Active Bank |
-| SAVE | Open/close USB PC file chooser |
+| ARP | Open/close song sample metadata and waveform |
+| SAVE tap | Request export through the running USB PC library service |
+| SAVE + PLAY/STOP | Open the PC file chooser; HOME returns |
+| SAVE + GLO | Play the selected pattern from the cursor row |
+| SAVE + OCT− / OCT+ | Undo / redo while stopped |
+| SAVE + HOME | Contextual help; KNOB2 changes topic, EDIT closes |
+| SAVE + SCL / LFO | Toggle selected channel mute / solo |
 | SAVE held + KNOB3 | Right: ST stereo Audio OUT; left: SPK all-track mono speaker mix |
 
 Field edits and deletion work while stopped in EDIT or WRITE. REC controls
@@ -72,12 +79,16 @@ Hold EDIT and briefly press **OCT−, OCT+, FX, SCL, ENV, LFO, ARP, SEQ** to sel
 Q1–Q8. Hold that pair for 600 ms to bind the captured PRESETS sample. An EDIT
 chord preserves WRITE. Shortcuts refer only to current MOD sample slots and are
 volatile. The demo binds kick/snare/closed hat/open hat/bass/EP/break/COME ON! to
-`01,03,06,07,11,14,0D,1B` (hex). NEW SONG/upload reset to sample slots 1–8.
+`01,03,06,07,11,14,0D,1B` (hex). NEW SONG and other MODs start at slots 01–08;
+loading the original demo reapplies its palette.
 
 Hold SEQ and move KNOB1/SELECT to extend a shaded row/channel rectangle.
 Release SEQ to retain it; ordinary navigation moves the paste destination.
 SEQ+SCL copies, SEQ+LFO pastes with overwrite and clips at row 63/channel 4.
 SEQ alone clears the selection. The fixed clipboard is at most 1024 bytes.
+SEQ+FX cuts; SEQ+ENV fills the selection with its anchor cell at the entry-step
+interval (STEP 00 fills every row). SEQ+OCT−/OCT+ transpose the block by a
+semitone. SEQ+ARP/GLO insert/delete a row on the selected channel.
 
 ### Order arranger
 
@@ -88,6 +99,28 @@ pattern; SEQ duplicates the current pattern. These assign the new pattern to
 the selected order. HOME returns to fields. All mutations require stopped
 playback. Reusing a pattern in several orders does not copy its data.
 
+### Samples, history and feedback
+
+ARP opens the current song sample's min/max waveform, PCM length, volume,
+finetune and loop start/length. PRESETS chooses a song slot; KNOB2 selects a
+parameter. KNOB3/4 change volume or finetune one step, or loop positions by
+2/256 bytes. Finetune units are one eighth of a semitone. Browsing does not
+change song data. Piano keys audition, and ENV goes directly to the bank.
+
+Eight completed edits can be undone/redone, including pattern/block edits,
+sample metadata and supported order/pattern creation. The compact fixed history
+store is 10,328 bytes on the host (about 10.1 KiB) and lives in volatile cache
+SRAM on target; it does not retain sample PCM. Importing/replacing
+a bank sample, NEW SONG and loading a MOD reset history. A bank copy asks for
+FX confirmation when the destination is occupied or history would be cleared;
+EDIT cancels. Dirty NEW SONG asks for REC confirmation after the hold is released.
+
+The header shows output mode, dirty `*`, tempo/speed such as `B160/06`, and
+available `UxxRxx` history counts. `M`/`S` beside a channel identify mute/solo.
+During PLAY, keys audition; editing requires STOP. Orders/rows are zero-based;
+sample slots are hex `01`–`1F`. Help and notices fit the real 30-column pattern
+or 20-column file-list width.
+
 ## Bank, demo and NEW SONG
 
 ENV opens the bank. KNOB1 browses and auditions immutable PCM; piano auditions
@@ -95,8 +128,11 @@ another pitch. PRESETS chooses a destination MOD slot. FX explicitly copies
 the sound there while stopped and returns to the pattern. Browsing leaves song
 bytes and dirty state unchanged.
 
-Hold SEQ+REC for 600 ms for **NEW SONG**: one blank pattern/order and 31 empty
-sample slots. Import only the bank sounds needed; the bank is not copied wholesale.
+Hold SEQ+REC for 600 ms for **NEW SONG**. If the current song is dirty, release
+both buttons and tap REC to confirm, or EDIT to cancel. The result is one blank
+pattern/order and 31 empty sample slots. Import only the sounds needed; the bank
+is not copied wholesale. PCM imports reset undo history, so import the kit before
+writing notes.
 
 - `samples/FM1BREAK.FMB`: 29 original signed 8-bit mono sounds, 81,808 bytes.
 - `samples/FM1BREAK.MOD`: 160 BPM, 87,612 bytes, six patterns across ten orders.
@@ -120,26 +156,47 @@ channels 1/4 left and 2/3 right. Volume ramp and effects remain:
 Unsupported effects survive export. Tremolo, E6 loops, Amiga filtering and exact
 Paula output are not implemented.
 
-The standard v31 build embeds the original demo and read-only bank; this unit's
-v32 build instead boots STOA with its own samples selectable through PRESETS.
-The separate ENV bank still contains the original 29 sounds. Edits are volatile;
-power cycling restores the embedded song. Save to the PC before switching off. Writable flash
-persistence, undo, waveform editing, device WAV conversion and realtime recording
-are outside this milestone.
+The boot song is selected at build time; the workshop defaults to the original
+FM1BREAK demo and read-only bank. Edits, undo history, quick bindings and cursor
+state are volatile. Power cycling restores the embedded song. Export to the PC
+before switching off. Writable work-song persistence, sample PCM drawing/cutting,
+device WAV conversion and realtime recording are not implemented.
+
+Optional target USB audio/video features require their own build and physical
+acceptance. The PC workshop does not simulate USB enumeration, transfers, DAC
+interrupts or LCD/SPI timing.
+
+## Try the graphical workshop
+
+The workshop runs the actual `session.c` controller, `mod.c` player and `view.c`
+renderer behind an illustrated FM-1 panel. Encoders have one-detent buttons;
+modifier latches make two-button gestures usable with a mouse. Optional WebAudio
+previews the engine. It never connects to or flashes an FM-1.
+
+```powershell
+cmake -S firmware/protracker -B firmware/protracker/build/workflow20 -G "Visual Studio 17 2022" -A x64
+cmake --build firmware/protracker/build/workflow20 --config Release
+C:\Python311\python.exe firmware/protracker/tools/serve_workshop.py --build firmware/protracker/build/workflow20
+```
+
+Open the printed local URL, normally `http://127.0.0.1:8765`. Enable preview
+audio if wanted. Use **Download this MOD** before closing the server: this is
+the workshop's save path, while the firmware SAVE gesture requests a real PC
+library service. No USB service is emulated in the workshop.
+
+![Offline sample, help and confirmation views](preview/fm1-tracker-editing.png)
 
 ## Build and verify offline
 
 Run from the repository root:
 
 ```powershell
-cmake -S firmware/protracker -B firmware/protracker/build -G "Visual Studio 17 2022" -A x64
-cmake --build firmware/protracker/build --config Release
-ctest --test-dir firmware/protracker/build -C Release --output-on-failure
+cmake -S firmware/protracker -B firmware/protracker/build/workflow20 -G "Visual Studio 17 2022" -A x64
+cmake --build firmware/protracker/build/workflow20 --config Release
+ctest --test-dir firmware/protracker/build/workflow20 -C Release --output-on-failure
 C:\Python311\python.exe -m unittest discover -s firmware/protracker/tests -p "test_*.py" -v
-C:\Python311\python.exe firmware/protracker/tools/render_ui_preview.py --build firmware/protracker/build
-& firmware/protracker/build/Release/mod_demo_preview.exe firmware/protracker/samples/FM1BREAK.MOD firmware/protracker/build/preview/FM1BREAK-demo.wav
-C:\Python311\python.exe firmware/usb-diag/build.py --controller 0 --peripheral-tests --lcd-stock-fill --lcd-stock-dma --lcd-stock-sequence --mod --lcd-async --lcd-spi30 --lcd-rgb444 --mod-default-song firmware/protracker/samples/FM1BREAK.MOD --mod-default-song-sha256 b7a4a0d04762e895e732c5a78a1f8fc0f40fe96054cad78291db0c96253bae9a --mod-bank firmware/protracker/samples/FM1BREAK.FMB --mod-bank-sha256 0696b3a3e75732abf27edbfdd3eb68f9fe689d0cbe13a14c556e853b9abf89f8 --out firmware/usb-diag/build/mod-fast-editor-bank-v31
-C:\Python311\python.exe firmware/usb-diag/package.py --build firmware/usb-diag/build/mod-fast-editor-bank-v31
+C:\Python311\python.exe firmware/protracker/tools/render_ui_preview.py --build firmware/protracker/build/workflow20
+& firmware/protracker/build/workflow20/Release/mod_demo_preview.exe firmware/protracker/samples/FM1BREAK.MOD firmware/protracker/build/workflow20/FM1BREAK-demo.wav
 ```
 
 Target building requires the pinned clean AC79 SDK and WL82 tools documented
@@ -149,7 +206,8 @@ vendor `.fwsc`/`.ufw`. Build success does not constitute hardware acceptance.
 
 ## USB load/save and file chooser
 
-Use the observed COM port (COM6 on the v30 bench; it can change):
+Discover the current CDC port first; COM6 below is only an example. Stop the
+library server before running the separate client on the same port.
 
 ```powershell
 C:\Python311\python.exe firmware/protracker/client.py list
@@ -159,13 +217,15 @@ C:\Python311\python.exe firmware/protracker/client.py stop --port COM6
 C:\Python311\python.exe firmware/protracker/client.py save --port COM6 --file edited.mod
 C:\Python311\python.exe firmware/protracker/client.py key --port COM6
 C:\Python311\python.exe firmware/protracker/client.py vol --port COM6
-C:\Python311\python.exe firmware/protracker/library_server.py serve --port COM6
+C:\Python311\python.exe firmware/protracker/library_server.py serve --port COM6 --library firmware/protracker/samples --autosave-dir private-library/MOD/edits
 ```
 
 The client checks identity, ordered chunks and CRC32 and saves to a new file.
 Export freezes editing/playback until acknowledgement, abort, disconnect or
 timeout. Unsaved edits require explicit discard for upload; the library server
-saves dirty songs before replacement. SAVE opens its catalog, SELECT/KNOB1
-choose a file and PLAY requests it from the running PC server. Classic modules
+saves dirty songs before replacement. SAVE tap requests a new timestamped MOD
+in the service's autosave directory; wait for `SAVED TO PC`. A missing server,
+timeout or failure does not mean the song was saved. SAVE+PLAY opens the catalog,
+SELECT/KNOB1 choose a file and PLAY requests it from the PC server. Classic modules
 remain privately staged on the PC. There is no mass-storage filesystem or CDC
 firmware writer.

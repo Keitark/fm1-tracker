@@ -59,11 +59,13 @@ static int screenshot(const char *directory,const char *name,unsigned page,
         if(fwrite(rgb,1,sizeof(rgb),file)!=sizeof(rgb)){fclose(file);return -1;}
     }
     if(fclose(file))return -1;
-    printf("%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\n",name,page,
+    printf("%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\n",name,page,
            running,editor.edit,editor.field,
            running?player.current_order:editor.order,
            running?player.current_row:editor.row,editor.channel,editor.sample,
-           context.arranger,context.bank_open);
+           context.arranger,context.bank_open,context.sample_field,context.help_open,
+           context.help_topic,context.confirm,context.mute_mask,context.solo_mask,
+           context.undo_count,context.redo_count,context.save_modifier);
     return 0;
 }
 
@@ -132,9 +134,28 @@ int main(int argc,char **argv){
     snprintf(context.notice,sizeof(context.notice),"Q1 BOUND S01 TIGHT KICK");
     if(screenshot(argv[2],"quick-sample",0,0,1))return 1;
 
+    cursor(18,2,17,0);context.sample_open=1;context.sample_field=FM1_SAMPLE_FIELD_LOOP_LENGTH;
+    context.undo_count=3;context.redo_count=1;
+    if(screenshot(argv[2],"sample-list",2,0,1))return 1;
+    cursor(18,2,31,0);context.sample_open=1;
+    if(screenshot(argv[2],"sample-empty",2,0,1))return 1;
     cursor(18,2,7,0);
-    if(screenshot(argv[2],"sample-list",2,0,1) ||
-       screenshot(argv[2],"usb-file-chooser",1,0,1))return 1;
+    if(screenshot(argv[2],"usb-file-chooser",1,0,1))return 1;
+
+    for(i=0;i<FM1_VIEW_HELP_TOPICS;i++){
+        static const char *const help_names[]={"help-pattern","help-blocks","help-sample","help-arranger","help-transport"};
+        cursor(18,2,7,0);context.help_open=1;context.help_topic=(uint8_t)i;
+        if(screenshot(argv[2],help_names[i],0,0,1))return 1;
+    }
+    cursor(18,2,7,0);context.confirm=FM1_VIEW_CONFIRM_NEW;
+    if(screenshot(argv[2],"confirm-new",0,0,1))return 1;
+    cursor(18,2,7,0);context.confirm=FM1_VIEW_CONFIRM_BANK;
+    snprintf(context.bank_name,sizeof(context.bank_name),"EP MAJ7 STAB");
+    if(screenshot(argv[2],"confirm-bank",0,0,1))return 1;
+    cursor(18,1,3,0);context.mute_mask=13;context.solo_mask=2;context.undo_count=4;context.redo_count=2;
+    if(screenshot(argv[2],"muted-history",0,0,1))return 1;
+    cursor(18,1,3,0);context.save_modifier=1;context.undo_count=4;context.redo_count=2;
+    if(screenshot(argv[2],"save-shortcuts",0,0,1))return 1;
 
     cursor(16,1,2,0);
     if(fm1_mod_player_start_pattern_at(&player,&document,0,16))return 1;

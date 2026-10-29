@@ -7,7 +7,7 @@ enum { FM1_CONTROL_NONE, FM1_CONTROL_KEY, FM1_CONTROL_QUICK_SELECT,
 typedef struct { uint8_t kind, index, sample; } fm1_tracker_control_event;
 typedef struct {
     uint16_t held;
-    uint8_t edit_used, seq_used, save_used, new_pending, new_fired;
+    uint8_t edit_used, seq_used, save_used, rec_used, new_pending, new_fired;
     uint32_t new_since;
     uint8_t quick_pending[8], quick_bound[8], quick_sample[8];
     uint32_t quick_since[8];
